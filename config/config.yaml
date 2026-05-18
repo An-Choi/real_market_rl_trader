@@ -1,0 +1,42 @@
+project:
+  name: real-market-rl-trader
+  python_version: "3.10+"
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  sample_file: sample_ohlcv.csv
+  symbol: AAPL
+  start_date: "2020-01-01"
+  end_date: "2024-01-01"
+  interval: 1d
+
+features:
+  use_regime_features: true
+  use_liquidity_features: true
+  use_pressure_features: true
+
+environment:
+  initial_cash: 10000.0
+  max_position: 1.0
+  risk_penalty_rate: 0.0
+  action_space:
+    0: Hold
+    1: Buy
+    2: Sell
+
+friction:
+  fee_rate: 0.001
+  spread_rate: 0.0005
+  slippage_rate: 0.0005
+  execution_uncertainty_rate: 0.0
+
+agent:
+  type: baseline
+  baseline_name: moving_average_crossover
+  rl_model_name: PPO
+  total_timesteps: 10000
+
+backtest:
+  max_steps:
+  benchmark: buy_and_hold
