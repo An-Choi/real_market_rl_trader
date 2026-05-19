@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from gymnasium import spaces
 
-from env.friction_model import FrictionModel
+from friction.friction_model import FrictionModel
 
 
 ACTION_HOLD = 0
@@ -111,7 +111,11 @@ class TradingEnvironment(gym.Env):
     def _get_observation(self) -> np.ndarray:
         """Build the observation from market features and portfolio state."""
         row = self.market_data.iloc[self.current_step]
-        features = row[self.feature_columns].fillna(0.0).to_numpy(dtype=np.float32)
+        features = (
+            pd.to_numeric(row[self.feature_columns], errors="coerce")
+            .fillna(0.0)
+            .to_numpy(dtype=np.float32)
+        )
         portfolio_state = np.array(
             [
                 self.cash / self.initial_cash,

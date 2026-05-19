@@ -1,4 +1,8 @@
-"""Compatibility entrypoint for the reorganized project layout."""
+"""Backtest entrypoint.
+
+For now this reuses the baseline smoke-test pipeline. As the hybrid market
+environment grows, keep experiment-specific backtest orchestration here.
+"""
 
 from __future__ import annotations
 
