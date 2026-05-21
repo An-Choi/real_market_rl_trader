@@ -20,7 +20,7 @@ for path in (ENV_SRC, AGENT_SRC, PROJECT_ROOT):
 
 from data.data_loader import DataLoader
 from data.feature_engineer import FeatureEngineer
-from env.trading_env import TradingEnvironment
+from env.hybrid_market_env import HybridMarketEnv
 from evaluation.metrics import summarize_backtest
 from experiments.backtest_engine import BacktestEngine
 from friction.friction_model import FrictionModel
@@ -74,14 +74,20 @@ def main() -> None:
     featured_data = feature_engineer.fit_transform(processed_data)
 
     friction_model = FrictionModel(**config["friction"])
-    environment = TradingEnvironment(
+    va_config = config.get("virtual_agents", {})
+    environment = HybridMarketEnv(
         market_data=featured_data,
         feature_columns=feature_engineer.feature_columns,
         initial_cash=config["environment"]["initial_cash"],
         max_position=config["environment"]["max_position"],
         friction_model=friction_model,
         risk_penalty_rate=config["environment"]["risk_penalty_rate"],
+        noise_strength=va_config.get("noise_strength", 0.001),
+        trend_strength=va_config.get("trend_strength", 0.002),
+        mean_reversion_strength=va_config.get("mean_reversion_strength", 0.001),
+        max_agent_impact=va_config.get("max_agent_impact", 0.05),
     )
+    environment.reset(seed=config.get("seed", 42))  # 결정성 확보
 
     agent = MovingAverageCrossoverAgent()
     backtest_engine = BacktestEngine(agent=agent, environment=environment)
