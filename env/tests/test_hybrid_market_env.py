@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from env.hybrid_market_env import HybridMarketEnv
+from experiments.backtest_engine import BacktestEngine
 
 
 @pytest.fixture
@@ -64,6 +65,18 @@ def test_info_contains_hybrid_fields(env: HybridMarketEnv) -> None:
     _, _, _, _, info = env.step(1)
     for key in ("real_price", "simulated_price", "agent_impact", "execution_price"):
         assert key in info
+
+
+def test_info_separates_execution_and_valuation_steps(env: HybridMarketEnv) -> None:
+    env.reset(seed=0)
+    _, _, _, _, info = env.step(1)
+
+    assert info["execution_step"] == 0
+    assert info["valuation_step"] == 1
+    assert info["execution_simulated_price"] == pytest.approx(
+        env.trade_history[-1].price
+    )
+    assert info["simulated_price"] == pytest.approx(info["valuation_simulated_price"])
 
 
 def test_simulated_price_is_positive(env: HybridMarketEnv) -> None:
@@ -204,3 +217,52 @@ def test_agent_receives_only_past_history(market_data: pd.DataFrame) -> None:
 
     for step, history_len in seen:
         assert history_len == step + 1, f"step {step} got history len {history_len}"
+
+
+# --- Backtest integration ---
+
+
+def test_backtest_seed_replays_same_hybrid_trajectory(
+    market_data: pd.DataFrame,
+) -> None:
+    class BuyThenHoldAgent:
+        def predict(self, observation, market_row=None):
+            return 1 if market_row.name == 0 else 0
+
+    env_ = HybridMarketEnv(
+        market_data=market_data,
+        feature_columns=["ma_20"],
+        noise_strength=0.001,
+        trend_strength=0.0,
+        mean_reversion_strength=0.0,
+    )
+    engine = BacktestEngine(agent=BuyThenHoldAgent(), environment=env_)
+
+    first = engine.run(max_steps=10, seed=123)
+    second = engine.run(max_steps=10, seed=123)
+
+    assert first["portfolio_value"].tolist() == second["portfolio_value"].tolist()
+    assert first["agent_impact"].tolist() == second["agent_impact"].tolist()
+
+
+def test_backtest_results_keep_hybrid_diagnostics(
+    market_data: pd.DataFrame,
+) -> None:
+    class HoldAgent:
+        def predict(self, observation, market_row=None):
+            return 0
+
+    env_ = HybridMarketEnv(market_data=market_data, feature_columns=["ma_20"])
+    engine = BacktestEngine(agent=HoldAgent(), environment=env_)
+
+    results = engine.run(max_steps=1, seed=123)
+
+    expected_columns = {
+        "real_price",
+        "simulated_price",
+        "agent_impact",
+        "execution_price",
+        "execution_step",
+        "valuation_step",
+    }
+    assert expected_columns.issubset(results.columns)

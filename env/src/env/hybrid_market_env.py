@@ -55,6 +55,10 @@ class HybridMarketEnv(TradingEnvironment):
         self.real_price: float = math.nan
         self.agent_impact: float = math.nan
         self.execution_price: float = math.nan
+        self.execution_step: int | None = None
+        self.execution_real_price: float = math.nan
+        self.execution_agent_impact: float = math.nan
+        self.valuation_step: int | None = None
         self._impact_cache: dict[int, tuple[float, float, float]] = {}
 
     def reset(self, seed: int | None = None, options: dict | None = None):
@@ -68,6 +72,10 @@ class HybridMarketEnv(TradingEnvironment):
         self.real_price = math.nan
         self.agent_impact = math.nan
         self.execution_price = math.nan
+        self.execution_step = None
+        self.execution_real_price = math.nan
+        self.execution_agent_impact = math.nan
+        self.valuation_step = None
         self._impact_cache = {}
         return obs, info
 
@@ -89,7 +97,9 @@ class HybridMarketEnv(TradingEnvironment):
         return result
 
     def _execute_trade(self, action: int) -> TradeExecution:
-        _, simulated_price, _ = self._compute_impact_at(self.current_step)
+        real_price, simulated_price, agent_impact = self._compute_impact_at(
+            self.current_step
+        )
         target_position = self._action_to_target_position(action)
         trade_units = target_position - self.position
         trade_value = trade_units * simulated_price
@@ -102,7 +112,10 @@ class HybridMarketEnv(TradingEnvironment):
         self.cash -= friction_cost
         self.position = target_position
 
+        self.execution_step = self.current_step
+        self.execution_real_price = real_price
         self.execution_price = simulated_price
+        self.execution_agent_impact = agent_impact
         execution = TradeExecution(
             action=action,
             price=simulated_price,
@@ -119,10 +132,19 @@ class HybridMarketEnv(TradingEnvironment):
         self.real_price = real_price
         self.simulated_price = simulated_price
         self.agent_impact = agent_impact
+        self.valuation_step = self.current_step
         return self.cash + (self.position * simulated_price)
 
     def step(self, action: int):
         obs, reward, terminated, truncated, info = super().step(action)
+        info["execution_step"] = self.execution_step
+        info["valuation_step"] = self.valuation_step
+        info["execution_real_price"] = self.execution_real_price
+        info["execution_simulated_price"] = self.execution_price
+        info["execution_agent_impact"] = self.execution_agent_impact
+        info["valuation_real_price"] = self.real_price
+        info["valuation_simulated_price"] = self.simulated_price
+        info["valuation_agent_impact"] = self.agent_impact
         info["real_price"] = self.real_price
         info["simulated_price"] = self.simulated_price
         info["agent_impact"] = self.agent_impact

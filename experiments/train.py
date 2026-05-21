@@ -87,11 +87,12 @@ def main() -> None:
         mean_reversion_strength=va_config.get("mean_reversion_strength", 0.001),
         max_agent_impact=va_config.get("max_agent_impact", 0.05),
     )
-    environment.reset(seed=config.get("seed", 42))  # 결정성 확보
-
     agent = MovingAverageCrossoverAgent()
     backtest_engine = BacktestEngine(agent=agent, environment=environment)
-    results = backtest_engine.run(max_steps=config["backtest"].get("max_steps"))
+    results = backtest_engine.run(
+        max_steps=config["backtest"].get("max_steps"),
+        seed=config.get("seed", 42),
+    )
     metrics = summarize_backtest(results)
 
     logger.info("Backtest metrics: %s", metrics)
