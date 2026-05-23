@@ -40,3 +40,11 @@ agent:
 backtest:
   max_steps:
   benchmark: buy_and_hold
+
+virtual_agents:
+  noise_strength: 0.001
+  trend_strength: 0.002
+  mean_reversion_strength: 0.001
+  max_agent_impact: 0.05
+
+seed: 42

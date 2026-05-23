@@ -8,6 +8,22 @@ from typing import Any
 import pandas as pd
 
 
+BACKTEST_INFO_KEYS = (
+    "real_price",
+    "simulated_price",
+    "agent_impact",
+    "execution_price",
+    "execution_step",
+    "valuation_step",
+    "execution_real_price",
+    "execution_simulated_price",
+    "execution_agent_impact",
+    "valuation_real_price",
+    "valuation_simulated_price",
+    "valuation_agent_impact",
+)
+
+
 @dataclass
 class BacktestEngine:
     """Run an agent through a trading environment and collect results."""
@@ -16,10 +32,14 @@ class BacktestEngine:
     environment: Any
     results: list[dict] = field(default_factory=list)
 
-    def run(self, max_steps: int | None = None) -> pd.DataFrame:
+    def run(
+        self,
+        max_steps: int | None = None,
+        seed: int | None = None,
+    ) -> pd.DataFrame:
         """Execute a backtest loop."""
         # TODO: Add vectorized evaluation, logging, and benchmark comparison.
-        observation, info = self.environment.reset()
+        observation, info = self.environment.reset(seed=seed)
         done = False
         step_count = 0
         self.results = []
@@ -29,16 +49,18 @@ class BacktestEngine:
             action = self._predict_action(observation, market_row=market_row)
             observation, reward, terminated, truncated, info = self.environment.step(action)
 
-            self.results.append(
-                {
-                    "step": step_count,
-                    "action": action,
-                    "reward": reward,
-                    "portfolio_value": info["portfolio_value"],
-                    "position": info["position"],
-                    "friction_cost": info["friction_cost"],
-                }
-            )
+            result_row = {
+                "step": step_count,
+                "action": action,
+                "reward": reward,
+                "portfolio_value": info["portfolio_value"],
+                "position": info["position"],
+                "friction_cost": info["friction_cost"],
+            }
+            for key in BACKTEST_INFO_KEYS:
+                if key in info:
+                    result_row[key] = info[key]
+            self.results.append(result_row)
 
             step_count += 1
             done = terminated or truncated
