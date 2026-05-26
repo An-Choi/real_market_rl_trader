@@ -39,5 +39,9 @@ class FeatureEngineer:
 
     def _infer_feature_columns(self, data: pd.DataFrame) -> list[str]:
         """Infer non-raw columns that should be passed to the RL observation."""
-        raw_columns = {"Date", "Datetime", "Open", "High", "Low", "Close", "Adj Close", "Volume"}
+        raw_columns = {
+            "Date", "Datetime", "Timestamp",
+            "Open", "High", "Low", "Close", "Adj Close",
+            "Volume", "TradingValue", "Change",
+        }
         return [column for column in data.columns if column not in raw_columns]
