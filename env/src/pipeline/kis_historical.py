@@ -140,10 +140,10 @@ class KISHistoricalFetcher:
             return pd.DataFrame(columns=MINUTE_OUTPUT_COLUMNS)
 
         combined = pd.concat(frames, ignore_index=True)
-        combined = combined.sort_values("Timestamp").reset_index(drop=True)
+        combined = combined.drop_duplicates(subset=["Timestamp"]).sort_values("Timestamp").reset_index(drop=True)
         return combined
 
-    def _get(self, endpoint: str, tr_id: str, params: dict) -> dict:
+    def _get(self, endpoint: str, tr_id: str, params: dict, _retries: int = 3) -> dict:
         headers = {
             "Content-Type": "application/json",
             "authorization": f"Bearer {self.auth.get_token()}",
@@ -152,13 +152,19 @@ class KISHistoricalFetcher:
             "tr_id": tr_id,
             "custtype": "P",
         }
-        response = requests.get(
-            self.auth.base_url + endpoint,
-            params=params,
-            headers=headers,
-            timeout=10,
-        )
-        response.raise_for_status()
+        for attempt in range(_retries):
+            response = requests.get(
+                self.auth.base_url + endpoint,
+                params=params,
+                headers=headers,
+                timeout=10,
+            )
+            if response.status_code == 500 and attempt < _retries - 1:
+                # KIS demo API returns transient 500s; back off and retry
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            response.raise_for_status()
+            break
         body = response.json()
         if body.get("rt_cd") != "0":
             raise RuntimeError(f"KIS API error: {body.get('msg1')} (rt_cd={body.get('rt_cd')})")
