@@ -4,4 +4,7 @@ matplotlib
 pyyaml
 gymnasium
 stable-baselines3
-yfinance
+requests
+pyarrow
+responses
+python-dotenv

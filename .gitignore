@@ -30,3 +30,9 @@ htmlcov/
 logs/
 runs/
 wandb/
+
+# KIS credentials and data
+.env
+data/.kis_token*
+data/raw/
+data/processed/

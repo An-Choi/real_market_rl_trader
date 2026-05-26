@@ -98,7 +98,7 @@ python src/main.py
 
 ## 향후 확장 계획
 
-- 실제 yfinance 또는 broker API 기반 데이터 수집 구현
+- KIS REST API 기반 historical 데이터 수집 구현
 - feature normalization, train/test split, walk-forward validation 추가
 - order book, tick, quote 데이터 기반 liquidity/pressure feature 확장
 - position size와 continuous action space 지원
