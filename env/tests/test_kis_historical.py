@@ -211,3 +211,40 @@ def test_fetch_minute_range_iterates_dates(auth: KISAuth) -> None:
 
     assert len(df) == 6
     assert df["Timestamp"].dt.date.nunique() == 3
+
+
+@responses.activate
+def test_get_retries_on_http_429(auth: KISAuth, monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.kis_historical.time.sleep", lambda *a, **k: None)
+    url = "https://openapivts.koreainvestment.com:29443/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+    responses.add(responses.GET, url, status=429, json={})
+    responses.add(responses.GET, url, status=200, json={
+        "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok",
+        "output1": {}, "output2": [_daily_row("20240102", 70000)],
+    })
+
+    fetcher = KISHistoricalFetcher(auth=auth, symbol="005930", rate_limit_sleep=0.0)
+    df = fetcher.fetch_daily(start=date(2024, 1, 2), end=date(2024, 1, 2))
+
+    assert len(responses.calls) == 2
+    assert len(df) == 1
+
+
+@responses.activate
+def test_get_retries_on_soft_rate_limit_code(auth: KISAuth, monkeypatch) -> None:
+    monkeypatch.setattr("pipeline.kis_historical.time.sleep", lambda *a, **k: None)
+    url = "https://openapivts.koreainvestment.com:29443/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+    responses.add(responses.GET, url, status=200, json={
+        "rt_cd": "1", "msg_cd": "EGW00201", "msg1": "초당 거래건수를 초과하였습니다.",
+        "output1": {}, "output2": [],
+    })
+    responses.add(responses.GET, url, status=200, json={
+        "rt_cd": "0", "msg_cd": "MCA00000", "msg1": "ok",
+        "output1": {}, "output2": [_daily_row("20240102", 70000)],
+    })
+
+    fetcher = KISHistoricalFetcher(auth=auth, symbol="005930", rate_limit_sleep=0.0)
+    df = fetcher.fetch_daily(start=date(2024, 1, 2), end=date(2024, 1, 2))
+
+    assert len(responses.calls) == 2
+    assert len(df) == 1
