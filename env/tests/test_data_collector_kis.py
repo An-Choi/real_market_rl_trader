@@ -113,3 +113,64 @@ def test_month_windows_split_clamp_and_contiguous() -> None:
         assert next_start == prev_end + timedelta(days=1)     # contiguous
     for s, e in w:
         assert (s.year, s.month) == (e.year, e.month)         # each within one month
+
+
+def _minute_df_for(start) -> pd.DataFrame:
+    ts = pd.Timestamp(year=start.year, month=start.month, day=start.day,
+                      hour=9, tz="Asia/Seoul")
+    return pd.DataFrame({"Timestamp": [ts], "Open": [1.0], "High": [1.0],
+                         "Low": [1.0], "Close": [1.0], "Volume": [1], "TradingValue": [1]})
+
+
+def test_backfill_minute_monthly_saves_one_file_per_month(tmp_path: Path) -> None:
+    from datetime import date
+    from unittest.mock import Mock
+    from pipeline.data_collector import DataCollector
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.side_effect = lambda start, end, max_pages_per_day: _minute_df_for(start)
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    saved = collector.backfill_minute_monthly(
+        fetcher=fetcher, symbol="005930", start=date(2025, 5, 22), end=date(2025, 7, 4)
+    )
+
+    assert saved == ["2025-05", "2025-06", "2025-07"]
+    assert fetcher.fetch_minute_range.call_count == 3
+    for part in saved:
+        assert (tmp_path / "005930" / "1m" / f"{part}.parquet").exists()
+
+
+def test_backfill_minute_monthly_skips_existing_unless_overwrite(tmp_path: Path) -> None:
+    from datetime import date
+    from unittest.mock import Mock
+    from pipeline.data_collector import DataCollector
+
+    # Pre-create the 2025-06 partition with a sentinel.
+    june_dir = tmp_path / "005930" / "1m"
+    june_dir.mkdir(parents=True)
+    sentinel = pd.DataFrame({"Timestamp": [pd.Timestamp("2025-06-02 09:00", tz="Asia/Seoul")],
+                             "Close": [999.0]})
+    sentinel.to_parquet(june_dir / "2025-06.parquet", index=False)
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.side_effect = lambda start, end, max_pages_per_day: _minute_df_for(start)
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    saved = collector.backfill_minute_monthly(
+        fetcher=fetcher, symbol="005930", start=date(2025, 5, 22), end=date(2025, 7, 4)
+    )
+
+    assert saved == ["2025-05", "2025-07"]                       # June skipped
+    called_starts = [c.kwargs["start"] for c in fetcher.fetch_minute_range.call_args_list]
+    assert date(2025, 6, 1) not in called_starts                 # not fetched
+    assert pd.read_parquet(june_dir / "2025-06.parquet")["Close"].iloc[0] == 999.0  # untouched
+
+    # overwrite=True re-fetches every month.
+    fetcher.fetch_minute_range.reset_mock()
+    saved2 = collector.backfill_minute_monthly(
+        fetcher=fetcher, symbol="005930", start=date(2025, 5, 22), end=date(2025, 7, 4),
+        overwrite=True,
+    )
+    assert saved2 == ["2025-05", "2025-06", "2025-07"]
+    assert fetcher.fetch_minute_range.call_count == 3
