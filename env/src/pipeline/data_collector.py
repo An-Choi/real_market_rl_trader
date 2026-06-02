@@ -2,11 +2,27 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
+
+
+def _month_windows(start: date, end: date) -> list[tuple[date, date]]:
+    """Split [start, end] into per-calendar-month windows, clamped to the range."""
+    windows: list[tuple[date, date]] = []
+    cur = start
+    while cur <= end:
+        if cur.month == 12:
+            month_last = date(cur.year, 12, 31)
+        else:
+            month_last = date(cur.year, cur.month + 1, 1) - timedelta(days=1)
+        w_end = min(month_last, end)
+        windows.append((cur, w_end))
+        cur = w_end + timedelta(days=1)
+    return windows
 
 
 @dataclass

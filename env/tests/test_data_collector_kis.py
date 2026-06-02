@@ -98,3 +98,18 @@ def test_fetch_kis_minute_delegates_to_fetcher(tmp_path: Path) -> None:
         start=date(2024, 1, 5), end=date(2024, 1, 5), max_pages_per_day=4
     )
     pd.testing.assert_frame_equal(result, expected)
+
+
+def test_month_windows_split_clamp_and_contiguous() -> None:
+    from datetime import date, timedelta
+    from pipeline.data_collector import _month_windows
+
+    w = _month_windows(date(2025, 5, 22), date(2026, 1, 3))
+
+    assert w[0] == (date(2025, 5, 22), date(2025, 5, 31))   # start-clamped
+    assert w[1] == (date(2025, 6, 1), date(2025, 6, 30))
+    assert w[-1] == (date(2026, 1, 1), date(2026, 1, 3))     # end-clamped
+    for (_, prev_end), (next_start, _) in zip(w, w[1:]):
+        assert next_start == prev_end + timedelta(days=1)     # contiguous
+    for s, e in w:
+        assert (s.year, s.month) == (e.year, e.month)         # each within one month
