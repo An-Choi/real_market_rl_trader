@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -52,7 +53,13 @@ class DataCollector:
         directory = self.raw_data_dir / symbol / interval
         directory.mkdir(parents=True, exist_ok=True)
         output_path = directory / f"{partition}.parquet"
-        data.to_parquet(output_path, engine="pyarrow", compression="snappy", index=False)
+        tmp_path = directory / f".{partition}.{os.getpid()}.tmp.parquet"
+        try:
+            data.to_parquet(tmp_path, engine="pyarrow", compression="snappy", index=False)
+            tmp_path.replace(output_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
         return output_path
 
     def backfill_minute_monthly(

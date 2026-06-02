@@ -51,7 +51,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols", type=str, default=DEFAULT_SYMBOLS,
                         help="Comma-separated symbol codes, e.g. 005930,000660")
     parser.add_argument("--daily-start", type=str, default="2020-01-01")
-    parser.add_argument("--daily-end", type=str, default="2025-12-31")
+    parser.add_argument("--daily-end", type=str, default=None,
+                        help="Inclusive daily end date, YYYY-MM-DD (default: today)")
     parser.add_argument("--minute-days", type=int, default=380,
                         help="Minute candles for the last N calendar days (KIS cap ~1yr)")
     parser.add_argument("--skip-daily", action="store_true")
@@ -93,7 +94,8 @@ def main() -> None:
     collector = DataCollector(raw_data_dir=args.raw_dir)
 
     symbols = _parse_symbols(args.symbols)
-    daily_start, daily_end = _iso(args.daily_start), _iso(args.daily_end)
+    daily_start = _iso(args.daily_start)
+    daily_end = _iso(args.daily_end) if args.daily_end else date.today()
     minute_end = date.today()
     minute_start = minute_end - timedelta(days=args.minute_days)
 

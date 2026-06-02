@@ -59,6 +59,26 @@ def test_save_raw_parquet_minute_uses_monthly_partition(tmp_path: Path) -> None:
     assert output_path.exists()
 
 
+def test_save_raw_parquet_cleans_temp_on_write_failure(
+    tmp_path: Path, sample_daily: pd.DataFrame, monkeypatch
+) -> None:
+    def failing_to_parquet(self, path, *args, **kwargs) -> None:
+        Path(path).write_text("partial")
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", failing_to_parquet)
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        collector.save_raw_parquet(
+            sample_daily, symbol="005930", interval="1d", partition="2024-2024"
+        )
+
+    directory = tmp_path / "005930" / "1d"
+    assert not (directory / "2024-2024.parquet").exists()
+    assert list(directory.glob(".*.tmp.parquet")) == []
+
+
 def test_fetch_kis_daily_delegates_to_fetcher(
     tmp_path: Path, sample_daily: pd.DataFrame
 ) -> None:
