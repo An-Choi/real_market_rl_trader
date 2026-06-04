@@ -43,6 +43,8 @@ MINUTE_COLUMN_MAP = {
 
 MINUTE_OUTPUT_COLUMNS = ["Timestamp", "Open", "High", "Low", "Close", "Volume", "TradingValue"]
 
+RATE_LIMIT_MSG_CODES = frozenset({"EGW00201"})  # KIS "초당 거래건수 초과"
+
 
 @dataclass
 class KISHistoricalFetcher:
@@ -143,7 +145,7 @@ class KISHistoricalFetcher:
         combined = combined.drop_duplicates(subset=["Timestamp"]).sort_values("Timestamp").reset_index(drop=True)
         return combined
 
-    def _get(self, endpoint: str, tr_id: str, params: dict, _retries: int = 3) -> dict:
+    def _get(self, endpoint: str, tr_id: str, params: dict, _retries: int = 4) -> dict:
         headers = {
             "Content-Type": "application/json",
             "authorization": f"Bearer {self.auth.get_token()}",
@@ -159,16 +161,20 @@ class KISHistoricalFetcher:
                 headers=headers,
                 timeout=10,
             )
-            if response.status_code == 500 and attempt < _retries - 1:
-                # KIS demo API returns transient 500s; back off and retry
+            # Transient HTTP: KIS demo emits sporadic 500s; 429 = rate limited.
+            if response.status_code in (429, 500) and attempt < _retries - 1:
                 time.sleep(2.0 * (attempt + 1))
                 continue
             response.raise_for_status()
-            break
-        body = response.json()
-        if body.get("rt_cd") != "0":
+            body = response.json()
+            if body.get("rt_cd") == "0":
+                return body
+            # Rate-limit soft error returned as HTTP 200 (e.g. EGW00201): back off, retry.
+            if body.get("msg_cd") in RATE_LIMIT_MSG_CODES and attempt < _retries - 1:
+                time.sleep(2.0 * (attempt + 1))
+                continue
             raise RuntimeError(f"KIS API error: {body.get('msg1')} (rt_cd={body.get('rt_cd')})")
-        return body
+        raise RuntimeError(f"KIS API exhausted {_retries} retries for {tr_id} at {endpoint}")
 
 
 def _make_daily_windows(start: date, end: date) -> list[tuple[date, date]]:
