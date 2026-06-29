@@ -180,12 +180,16 @@ class TradingEnvironment(gym.Env):
         current_value: float,
         friction_cost: float,
     ) -> float:
-        """Calculate reward as return minus friction and risk penalties."""
+        """Calculate reward as cost-deducted realized return minus risk penalty.
+
+        거래비용은 _execute_trade에서 이미 cash(→ portfolio_value)에 차감되므로
+        portfolio_return 자체가 비용 반영 후 수익률이다. friction을 reward에서
+        다시 빼면 이중 차감이 되므로 friction_cost는 별도 패널티로 쓰지 않는다.
+        """
         # TODO: Add drawdown penalty, inventory penalty, and risk-adjusted rewards.
         portfolio_return = (current_value - previous_value) / max(previous_value, 1e-9)
-        friction_penalty = friction_cost / max(previous_value, 1e-9)
         risk_penalty = self.units_held * self.risk_penalty_rate
-        return float(portfolio_return - friction_penalty - risk_penalty)
+        return float(portfolio_return - risk_penalty)
 
     def _execute_trade(self, action: int) -> TradeExecution:
         """Execute a Unit-scaling trade at the current real Close."""

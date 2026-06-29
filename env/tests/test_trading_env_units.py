@@ -76,10 +76,36 @@ def test_friction_charged_on_add(flat_data: pd.DataFrame) -> None:
     assert info["friction_cost"] > 0
 
 
-def test_clear_friction_exceeds_add_friction(flat_data: pd.DataFrame) -> None:
-    """매도(Clear) step 비용이 매수(Add) step 비용보다 거래세만큼 크다."""
+def test_friction_counted_once_in_reward(flat_data: pd.DataFrame) -> None:
+    """비용은 cash에서 이미 차감되므로 reward에 단 한 번만 반영된다.
+
+    가격이 100으로 고정이라 시장 PnL이 0이므로, 매수 step의 reward는
+    온전히 friction 드래그(-friction_cost / previous_value)와 같아야 한다.
+    """
     env = make_env(flat_data)
     env.reset(seed=0)
+    previous_value = env.portfolio_value
+    _, reward, _, _, info = env.step(1)  # Add 1 Unit (buy), 가격 변동 없음
+    expected = -info["friction_cost"] / previous_value
+    assert reward == pytest.approx(expected)
+
+
+def test_clear_sell_tax_exact_amount(flat_data: pd.DataFrame) -> None:
+    """매도(Clear) step에서 거래세가 정확히 abs(trade_value) * sell_tax_rate 만큼만
+    매수 대비 추가된다.
+
+    매수/매도 거래 규모가 동일(1 Unit = 2000 notional)하고 다른 비용은
+    좌우 대칭이므로, 두 step friction 차이는 정확히 매도 거래세여야 한다.
+    """
+    env = make_env(flat_data)
+    env.reset(seed=0)
+    sell_tax_rate = env.friction_model.sell_tax_rate
+    assert sell_tax_rate > 0  # 이 검증이 의미 있으려면 세율이 0이 아니어야 함
+
     _, _, _, _, add_info = env.step(1)   # Add 1 Unit (buy)
-    _, _, _, _, clear_info = env.step(2)  # Clear (sell)
-    assert clear_info["friction_cost"] > add_info["friction_cost"]
+    _, _, _, _, clear_info = env.step(2)  # Clear (sell), 동일 규모
+
+    unit_notional = env.initial_cash * env.unit_fraction  # 1 Unit 거래 금액
+    expected_tax = unit_notional * sell_tax_rate
+    diff = clear_info["friction_cost"] - add_info["friction_cost"]
+    assert diff == pytest.approx(expected_tax)
