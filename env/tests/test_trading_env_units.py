@@ -74,3 +74,12 @@ def test_friction_charged_on_add(flat_data: pd.DataFrame) -> None:
     env.reset(seed=0)
     _, _, _, _, info = env.step(1)  # Add → buys 1 Unit (2000 notional)
     assert info["friction_cost"] > 0
+
+
+def test_clear_friction_exceeds_add_friction(flat_data: pd.DataFrame) -> None:
+    """매도(Clear) step 비용이 매수(Add) step 비용보다 거래세만큼 크다."""
+    env = make_env(flat_data)
+    env.reset(seed=0)
+    _, _, _, _, add_info = env.step(1)   # Add 1 Unit (buy)
+    _, _, _, _, clear_info = env.step(2)  # Clear (sell)
+    assert clear_info["friction_cost"] > add_info["friction_cost"]
