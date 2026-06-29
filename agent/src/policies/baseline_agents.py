@@ -15,9 +15,12 @@ class BuyAndHoldAgent:
     def __init__(self) -> None:
         self.has_bought = False
 
+    def reset(self) -> None:
+        """Reset state before a new backtest run."""
+        self.has_bought = False
+
     def predict(self, observation: Any, market_row: pd.Series | None = None) -> tuple[int, dict]:
         """Return Buy once, then Hold."""
-        # TODO: Add reset hook for repeated backtests.
         if not self.has_bought:
             self.has_bought = True
             return 1, {}
@@ -30,6 +33,10 @@ class MovingAverageCrossoverAgent:
 
     fast_ma_col: str = "ma_5"
     slow_ma_col: str = "ma_20"
+
+    def reset(self) -> None:
+        """Reset state before a new backtest run."""
+        return None
 
     def predict(self, observation: Any, market_row: pd.Series | None = None) -> tuple[int, dict]:
         """Return Buy when fast MA is above slow MA, Sell when below."""
@@ -47,7 +54,12 @@ class RandomAgent:
     """Random discrete-action baseline."""
 
     def __init__(self, seed: int | None = None) -> None:
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
+
+    def reset(self) -> None:
+        """Reset the RNG so repeated backtests are reproducible."""
+        self.rng = np.random.default_rng(self.seed)
 
     def predict(self, observation: Any, market_row: pd.Series | None = None) -> tuple[int, dict]:
         """Sample Hold, Buy, or Sell uniformly."""
@@ -63,6 +75,10 @@ class RuleBasedRegimeAgent:
     volatility_col: str = "volatility_20"
     max_volatility: float = 0.03
 
+    def reset(self) -> None:
+        """Reset state before a new backtest run."""
+        return None
+
     def predict(self, observation: Any, market_row: pd.Series | None = None) -> tuple[int, dict]:
         """Trade in the direction of return when volatility is acceptable."""
         # TODO: Replace heuristic thresholds with configurable regime labels.
@@ -75,3 +91,17 @@ class RuleBasedRegimeAgent:
         if market_row[self.return_col] < 0:
             return 2, {}
         return 0, {}
+
+
+def make_baseline_agent(name: str, seed: int | None = None) -> Any:
+    """Create a baseline agent by config-friendly name."""
+    normalized = name.strip().lower().replace("-", "_")
+    if normalized in {"buy_and_hold", "buyhold"}:
+        return BuyAndHoldAgent()
+    if normalized in {"moving_average_crossover", "ma_crossover"}:
+        return MovingAverageCrossoverAgent()
+    if normalized == "random":
+        return RandomAgent(seed=seed)
+    if normalized in {"rule_based_regime", "regime"}:
+        return RuleBasedRegimeAgent()
+    raise ValueError(f"Unknown baseline agent: {name}")

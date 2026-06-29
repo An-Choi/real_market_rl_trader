@@ -169,7 +169,7 @@ class TradingEnvironment(gym.Env):
         if action == ACTION_BUY:
             return self.max_position
         if action == ACTION_SELL:
-            return -self.max_position
+            return 0.0
         return self.position
 
     def _calculate_portfolio_value(self) -> float:

@@ -39,6 +39,9 @@ class BacktestEngine:
     ) -> pd.DataFrame:
         """Execute a backtest loop."""
         # TODO: Add vectorized evaluation, logging, and benchmark comparison.
+        reset_agent = getattr(self.agent, "reset", None)
+        if callable(reset_agent):
+            reset_agent()
         observation, info = self.environment.reset(seed=seed)
         done = False
         step_count = 0

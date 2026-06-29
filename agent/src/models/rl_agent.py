@@ -6,6 +6,15 @@ from pathlib import Path
 from typing import Any
 
 
+DEFAULT_MODEL_KWARGS: dict[str, dict[str, Any]] = {
+    "PPO": {
+        "verbose": 0,
+        "n_steps": 64,
+        "batch_size": 32,
+    },
+}
+
+
 class RLAgent:
     """Wrapper around future Stable-Baselines3 agents."""
 
@@ -18,8 +27,16 @@ class RLAgent:
         """Store model configuration without forcing immediate model creation."""
         self.model_name = model_name
         self.policy = policy
-        self.model_kwargs = model_kwargs or {}
+        self.model_kwargs = self._merge_model_kwargs(model_kwargs)
         self.model: Any | None = None
+
+    def _merge_model_kwargs(
+        self,
+        model_kwargs: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Merge local defaults with caller-provided model options."""
+        defaults = DEFAULT_MODEL_KWARGS.get(self.model_name, {})
+        return {**defaults, **(model_kwargs or {})}
 
     def build(self, env: Any) -> None:
         """Build the underlying Stable-Baselines3 model."""
