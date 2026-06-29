@@ -103,9 +103,11 @@ class HybridMarketEnv(TradingEnvironment):
         target_position = self._action_to_target_position(action)
         trade_units = target_position - self.position
         trade_value = trade_units * simulated_price
+        side = "sell" if trade_units < 0 else "buy"
         liquidity_score = self._current_liquidity_score()
         friction_cost = self.friction_model.calculate_total_friction(
             trade_value=trade_value,
+            side=side,
             liquidity_score=liquidity_score,
         )
         self.cash -= trade_value

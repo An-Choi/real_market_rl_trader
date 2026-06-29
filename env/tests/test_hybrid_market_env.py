@@ -266,3 +266,22 @@ def test_backtest_results_keep_hybrid_diagnostics(
         "valuation_step",
     }
     assert expected_columns.issubset(results.columns)
+
+
+# --- Sell transaction tax (거래세) ---
+
+
+def test_sell_step_friction_exceeds_buy_step_friction(
+    market_data: pd.DataFrame,
+) -> None:
+    """동일 규모 매수 후 매도 시, 매도 step 비용이 거래세만큼 더 크다."""
+    env_ = HybridMarketEnv(market_data=market_data, feature_columns=["ma_20"])
+    env_.reset(seed=0)
+
+    _, _, _, _, buy_info = env_.step(1)   # Add 1 unit (buy)
+    buy_friction = buy_info["friction_cost"]
+
+    _, _, _, _, sell_info = env_.step(2)  # Clear position (sell)
+    sell_friction = sell_info["friction_cost"]
+
+    assert sell_friction > buy_friction
