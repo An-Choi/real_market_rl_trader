@@ -132,12 +132,11 @@ class TradingEnvironment(gym.Env):
         current_value: float,
         friction_cost: float,
     ) -> float:
-        """Calculate reward as return minus friction and risk penalties."""
+        """Calculate reward from net portfolio return and risk penalties."""
         # TODO: Add drawdown penalty, inventory penalty, and risk-adjusted rewards.
         portfolio_return = (current_value - previous_value) / max(previous_value, 1e-9)
-        friction_penalty = friction_cost / max(previous_value, 1e-9)
         risk_penalty = abs(self.position) * self.risk_penalty_rate
-        return float(portfolio_return - friction_penalty - risk_penalty)
+        return float(portfolio_return - risk_penalty)
 
     def _execute_trade(self, action: int) -> TradeExecution:
         """Execute a discrete target-position trade."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -63,16 +64,42 @@ class RLAgent:
         action, state = self.model.predict(observation, deterministic=deterministic)
         return int(action), state
 
+    def metadata(self) -> dict[str, Any]:
+        """Return reproducibility metadata for the wrapped model."""
+        return {
+            "model_name": self.model_name,
+            "policy": self.policy,
+            "model_kwargs": self.model_kwargs,
+        }
+
+    def metadata_path(self, path: str | Path) -> Path:
+        """Return the sidecar metadata path for a saved model path."""
+        path = Path(path)
+        if path.suffix == ".zip":
+            return path.with_suffix(".metadata.json")
+        return path.with_suffix(path.suffix + ".metadata.json")
+
     def save(self, path: str | Path) -> None:
         """Save the underlying model."""
-        # TODO: Save feature schema and config alongside model weights.
         if self.model is None:
             raise RuntimeError("No model is available to save.")
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
         self.model.save(path)
+        self.metadata_path(path).write_text(
+            json.dumps(self.metadata(), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
     def load(self, path: str | Path, env: Any | None = None) -> None:
         """Load a model from disk."""
-        # TODO: Restore the correct model class from metadata.
+        metadata_path = self.metadata_path(path)
+        if metadata_path.exists():
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self.model_name = metadata.get("model_name", self.model_name)
+            self.policy = metadata.get("policy", self.policy)
+            self.model_kwargs = metadata.get("model_kwargs", self.model_kwargs)
+
         if self.model_name != "PPO":
             raise NotImplementedError(f"Model is not wired yet: {self.model_name}")
 

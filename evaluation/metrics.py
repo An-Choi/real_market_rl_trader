@@ -58,6 +58,20 @@ def calculate_turnover(actions: pd.Series, portfolio_values: pd.Series) -> float
     return float(trade_count / max(average_value, 1e-9))
 
 
+def calculate_total_friction_cost(results: pd.DataFrame) -> float:
+    """Calculate total friction paid during a backtest."""
+    if "friction_cost" not in results or results["friction_cost"].empty:
+        return 0.0
+    return float(results["friction_cost"].sum())
+
+
+def calculate_average_friction_cost(results: pd.DataFrame) -> float:
+    """Calculate average friction cost per step."""
+    if "friction_cost" not in results or results["friction_cost"].empty:
+        return 0.0
+    return float(results["friction_cost"].mean())
+
+
 def summarize_backtest(results: pd.DataFrame) -> dict[str, float]:
     """Create a compact metric summary from backtest results."""
     # TODO: Add benchmark-relative metrics and transaction cost breakdowns.
@@ -69,10 +83,18 @@ def summarize_backtest(results: pd.DataFrame) -> dict[str, float]:
             "win_rate": 0.0,
             "number_of_trades": 0.0,
             "turnover": 0.0,
+            "total_friction_cost": 0.0,
+            "average_friction_cost": 0.0,
+            "friction_to_initial_value": 0.0,
+            "total_reward": 0.0,
+            "average_reward": 0.0,
+            "final_portfolio_value": 0.0,
         }
 
     equity_curve = results["portfolio_value"]
     returns = equity_curve.pct_change().dropna()
+    total_friction_cost = calculate_total_friction_cost(results)
+    initial_value = float(equity_curve.iloc[0])
     return {
         "total_return": calculate_total_return(equity_curve),
         "sharpe_ratio": calculate_sharpe_ratio(returns),
@@ -80,4 +102,10 @@ def summarize_backtest(results: pd.DataFrame) -> dict[str, float]:
         "win_rate": calculate_win_rate(results["reward"]),
         "number_of_trades": float(calculate_number_of_trades(results["action"])),
         "turnover": calculate_turnover(results["action"], equity_curve),
+        "total_friction_cost": total_friction_cost,
+        "average_friction_cost": calculate_average_friction_cost(results),
+        "friction_to_initial_value": total_friction_cost / max(initial_value, 1e-9),
+        "total_reward": float(results["reward"].sum()),
+        "average_reward": float(results["reward"].mean()),
+        "final_portfolio_value": float(equity_curve.iloc[-1]),
     }
