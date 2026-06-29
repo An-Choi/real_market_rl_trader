@@ -49,6 +49,14 @@ class TradingEnvironment(gym.Env):
         """
         super().__init__()
         self.market_data = market_data.reset_index(drop=True)
+        ts = pd.to_datetime(self.market_data["Timestamp"])
+        self._date_groups = {
+            d: np.asarray(grp)
+            for d, grp in self.market_data.groupby(ts.dt.date).groups.items()
+        }
+        self._available_dates = sorted(self._date_groups.keys())
+        self._active_date = None
+        self._active_index: np.ndarray | None = None
         self.feature_columns = feature_columns
         self.price_col = price_col
         self.initial_cash = initial_cash
@@ -75,8 +83,20 @@ class TradingEnvironment(gym.Env):
         self.trade_history: list[TradeExecution] = []
 
     def reset(self, seed: int | None = None, options: dict | None = None):
-        """Reset to the start of the active trading day."""
+        """Reset to the start of a single trading day."""
         super().reset(seed=seed)
+        options = options or {}
+        if "date" in options:
+            d = options["date"]
+            if isinstance(d, str):
+                d = pd.Timestamp(d).date()
+            self._active_date = d
+        else:
+            rng = np.random.default_rng(seed)
+            idx = int(rng.integers(0, len(self._available_dates)))
+            self._active_date = self._available_dates[idx]
+        self._active_index = self._date_groups[self._active_date]
+
         self.current_step = 0
         self.cash = self.initial_cash
         self.units_held = 0
@@ -89,15 +109,29 @@ class TradingEnvironment(gym.Env):
             "units_held": self.units_held,
         }
 
+    def _row_at(self, local_step: int) -> pd.Series:
+        """Map a local (within-day) step to the global market row."""
+        global_idx = int(self._active_index[local_step])
+        return self.market_data.iloc[global_idx]
+
     def step(self, action: int):
-        """Advance one market step after executing an action."""
+        """Advance one step; force-clear and terminate at the day's last bar."""
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
 
-        previous_value = self.portfolio_value
-        execution = self._execute_trade(action)
+        n = len(self._active_index)
+        is_last = self.current_step >= n - 1
+        forced_clear = False
 
-        self.current_step += 1
+        previous_value = self.portfolio_value
+        if is_last and self.units_held > 0:
+            execution = self._execute_trade(ACTION_CLEAR)
+            forced_clear = True
+        else:
+            execution = self._execute_trade(action)
+
+        if not is_last:
+            self.current_step += 1
         self.portfolio_value = self._calculate_portfolio_value()
         reward = self._calculate_reward(
             previous_value=previous_value,
@@ -105,25 +139,26 @@ class TradingEnvironment(gym.Env):
             friction_cost=execution.friction_cost,
         )
 
-        terminated = self.current_step >= len(self.market_data) - 1
+        terminated = is_last
         truncated = False
         info = {
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
             "friction_cost": execution.friction_cost,
+            "forced_clear": forced_clear,
         }
         return self._get_observation(), reward, terminated, truncated, info
 
     def _get_observation(self) -> np.ndarray:
         """Observation = features + Unit portfolio state (4)."""
-        row = self.market_data.iloc[self.current_step]
+        row = self._row_at(self.current_step)
         features = (
             pd.to_numeric(row[self.feature_columns], errors="coerce")
             .fillna(0.0)
             .to_numpy(dtype=np.float32)
         )
         price = float(row[self.price_col])
-        n = len(self.market_data)
+        n = len(self._active_index)
         units_held_frac = self.units_held / max(self.max_units, 1)
         held_value = self._held_market_value(price)
         cost_basis = self.units_held * self.initial_cash * self.unit_fraction
@@ -154,7 +189,7 @@ class TradingEnvironment(gym.Env):
 
     def _execute_trade(self, action: int) -> TradeExecution:
         """Execute a Unit-scaling trade at the current real Close."""
-        price = float(self.market_data.iloc[self.current_step][self.price_col])
+        price = float(self._row_at(self.current_step)[self.price_col])
         target_units = self._action_to_target_units(action)
         unit_notional = self.initial_cash * self.unit_fraction
         prev_units = self.units_held
@@ -219,15 +254,15 @@ class TradingEnvironment(gym.Env):
 
     def _calculate_portfolio_value(self) -> float:
         """Mark-to-market: cash + held notional scaled by price change."""
-        price = float(self.market_data.iloc[self.current_step][self.price_col])
+        price = float(self._row_at(self.current_step)[self.price_col])
         return self.cash + self._held_market_value(price)
 
     def _current_liquidity_score(self) -> float | None:
         """Return current liquidity score when available."""
         if "liquidity_score" not in self.market_data.columns:
             return None
-        return float(self.market_data.iloc[self.current_step]["liquidity_score"])
+        return float(self._row_at(self.current_step)["liquidity_score"])
 
     def get_current_market_row(self) -> pd.Series:
-        """Expose the current market row for baseline agents and diagnostics."""
-        return self.market_data.iloc[self.current_step]
+        """Current market row within the active trading day."""
+        return self._row_at(self.current_step)
