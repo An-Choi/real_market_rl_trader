@@ -13,8 +13,8 @@ from friction.friction_model import FrictionModel
 
 
 ACTION_HOLD = 0
-ACTION_BUY = 1
-ACTION_SELL = 2
+ACTION_ADD = 1
+ACTION_CLEAR = 2
 
 
 @dataclass
@@ -38,26 +38,27 @@ class TradingEnvironment(gym.Env):
         feature_columns: list[str],
         price_col: str = "Close",
         initial_cash: float = 10_000.0,
-        max_position: float = 1.0,
+        unit_fraction: float = 0.20,
+        max_units: int = 5,
         friction_model: FrictionModel | None = None,
         risk_penalty_rate: float = 0.0,
     ) -> None:
-        """Initialize the trading environment.
+        """Real-OHLCV intraday Unit-scaling environment.
 
-        The initial action space is discrete:
-        0 = Hold, 1 = Buy, 2 = Sell.
+        Discrete actions: 0=Hold, 1=Add 1 Unit, 2=Clear.
         """
         super().__init__()
         self.market_data = market_data.reset_index(drop=True)
         self.feature_columns = feature_columns
         self.price_col = price_col
         self.initial_cash = initial_cash
-        self.max_position = max_position
+        self.unit_fraction = unit_fraction
+        self.max_units = max_units
         self.friction_model = friction_model or FrictionModel()
         self.risk_penalty_rate = risk_penalty_rate
 
         self.action_space = spaces.Discrete(3)
-        observation_size = len(self.feature_columns) + 3
+        observation_size = len(self.feature_columns) + 4
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -67,24 +68,29 @@ class TradingEnvironment(gym.Env):
 
         self.current_step = 0
         self.cash = self.initial_cash
-        self.position = 0.0
+        self.units_held = 0
+        self.entry_step: int | None = None
+        self.entry_price: float | None = None
         self.portfolio_value = self.initial_cash
         self.trade_history: list[TradeExecution] = []
 
     def reset(self, seed: int | None = None, options: dict | None = None):
-        """Reset the environment state."""
-        # TODO: Support randomized episode starts for training.
+        """Reset to the start of the active trading day."""
         super().reset(seed=seed)
         self.current_step = 0
         self.cash = self.initial_cash
-        self.position = 0.0
+        self.units_held = 0
+        self.entry_step = None
+        self.entry_price = None
         self.portfolio_value = self.initial_cash
         self.trade_history = []
-        return self._get_observation(), {"portfolio_value": self.portfolio_value}
+        return self._get_observation(), {
+            "portfolio_value": self.portfolio_value,
+            "units_held": self.units_held,
+        }
 
     def step(self, action: int):
         """Advance one market step after executing an action."""
-        # TODO: Add episode truncation, execution delay, and position size actions.
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
 
@@ -103,25 +109,32 @@ class TradingEnvironment(gym.Env):
         truncated = False
         info = {
             "portfolio_value": self.portfolio_value,
-            "position": self.position,
+            "units_held": self.units_held,
             "friction_cost": execution.friction_cost,
         }
         return self._get_observation(), reward, terminated, truncated, info
 
     def _get_observation(self) -> np.ndarray:
-        """Build the observation from market features and portfolio state."""
+        """Observation = features + Unit portfolio state (4)."""
         row = self.market_data.iloc[self.current_step]
         features = (
             pd.to_numeric(row[self.feature_columns], errors="coerce")
             .fillna(0.0)
             .to_numpy(dtype=np.float32)
         )
+        price = float(row[self.price_col])
+        n = len(self.market_data)
+        units_held_frac = self.units_held / max(self.max_units, 1)
+        held_value = self._held_market_value(price)
+        cost_basis = self.units_held * self.initial_cash * self.unit_fraction
+        unrealized_pnl_norm = (held_value - cost_basis) / max(self.initial_cash, 1e-9)
+        if self.units_held > 0 and self.entry_step is not None:
+            holding_duration_norm = (self.current_step - self.entry_step) / max(n - 1, 1)
+        else:
+            holding_duration_norm = 0.0
+        tod_frac = self.current_step / max(n - 1, 1)
         portfolio_state = np.array(
-            [
-                self.cash / self.initial_cash,
-                self.position / max(self.max_position, 1e-9),
-                self.portfolio_value / self.initial_cash,
-            ],
+            [units_held_frac, unrealized_pnl_norm, holding_duration_norm, tod_frac],
             dtype=np.float32,
         )
         return np.concatenate([features, portfolio_state]).astype(np.float32)
@@ -136,26 +149,48 @@ class TradingEnvironment(gym.Env):
         # TODO: Add drawdown penalty, inventory penalty, and risk-adjusted rewards.
         portfolio_return = (current_value - previous_value) / max(previous_value, 1e-9)
         friction_penalty = friction_cost / max(previous_value, 1e-9)
-        risk_penalty = abs(self.position) * self.risk_penalty_rate
+        risk_penalty = self.units_held * self.risk_penalty_rate
         return float(portfolio_return - friction_penalty - risk_penalty)
 
     def _execute_trade(self, action: int) -> TradeExecution:
-        """Execute a discrete target-position trade."""
+        """Execute a Unit-scaling trade at the current real Close."""
         price = float(self.market_data.iloc[self.current_step][self.price_col])
-        target_position = self._action_to_target_position(action)
-        trade_units = target_position - self.position
-        trade_value = trade_units * price
-        side = "sell" if trade_units < 0 else "buy"
+        target_units = self._action_to_target_units(action)
+        unit_notional = self.initial_cash * self.unit_fraction
+        prev_units = self.units_held
+        delta_units = target_units - prev_units
+        trade_value = delta_units * unit_notional
+        side = "sell" if delta_units < 0 else "buy"
         liquidity_score = self._current_liquidity_score()
-        friction_cost = self.friction_model.calculate_total_friction(
-            trade_value=trade_value,
-            side=side,
-            liquidity_score=liquidity_score,
+        friction_cost = (
+            self.friction_model.calculate_total_friction(
+                trade_value=trade_value,
+                side=side,
+                liquidity_score=liquidity_score,
+            )
+            if delta_units != 0
+            else 0.0
         )
 
         self.cash -= trade_value
         self.cash -= friction_cost
-        self.position = target_position
+        self.units_held = target_units
+
+        # entry 가격/시점 갱신 (단일 처리 지점).
+        if delta_units > 0:
+            if prev_units == 0:
+                self.entry_price = price
+                self.entry_step = self.current_step
+            else:
+                prev_cost = prev_units * unit_notional
+                add_cost = delta_units * unit_notional
+                self.entry_price = (
+                    (prev_cost * self.entry_price + add_cost * price)
+                    / (prev_cost + add_cost)
+                )
+        elif target_units == 0:
+            self.entry_price = None
+            self.entry_step = None
 
         execution = TradeExecution(
             action=action,
@@ -166,18 +201,26 @@ class TradingEnvironment(gym.Env):
         self.trade_history.append(execution)
         return execution
 
-    def _action_to_target_position(self, action: int) -> float:
-        """Map discrete action to target position."""
-        if action == ACTION_BUY:
-            return self.max_position
-        if action == ACTION_SELL:
-            return -self.max_position
-        return self.position
+    def _action_to_target_units(self, action: int) -> int:
+        """Map discrete action to target Unit count (long-only, 0..max_units)."""
+        if action == ACTION_ADD:
+            return min(self.units_held + 1, self.max_units)
+        if action == ACTION_CLEAR:
+            return 0
+        return self.units_held
+
+    def _held_market_value(self, price: float) -> float:
+        """Current market value of held units (cost basis scaled by price move)."""
+        if self.units_held == 0 or self.entry_price is None:
+            return 0.0
+        unit_notional = self.initial_cash * self.unit_fraction
+        cost_basis = self.units_held * unit_notional
+        return cost_basis * (price / self.entry_price)
 
     def _calculate_portfolio_value(self) -> float:
-        """Calculate marked-to-market portfolio value."""
-        current_price = float(self.market_data.iloc[self.current_step][self.price_col])
-        return self.cash + (self.position * current_price)
+        """Mark-to-market: cash + held notional scaled by price change."""
+        price = float(self.market_data.iloc[self.current_step][self.price_col])
+        return self.cash + self._held_market_value(price)
 
     def _current_liquidity_score(self) -> float | None:
         """Return current liquidity score when available."""
