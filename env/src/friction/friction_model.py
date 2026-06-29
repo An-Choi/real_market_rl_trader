@@ -13,6 +13,7 @@ class FrictionModel:
     spread_rate: float = 0.0005
     slippage_rate: float = 0.0005
     execution_uncertainty_rate: float = 0.0
+    sell_tax_rate: float = 0.002
 
     def calculate_fee(self, trade_value: float) -> float:
         """Calculate exchange or broker fee."""
@@ -41,9 +42,16 @@ class FrictionModel:
         # TODO: Model partial fills, latency, and failed order probability.
         return abs(trade_value) * self.execution_uncertainty_rate
 
+    def calculate_sell_tax(self, trade_value: float, side: str) -> float:
+        """Korean securities transaction tax — applied on sells only."""
+        if side == "sell":
+            return abs(trade_value) * self.sell_tax_rate
+        return 0.0
+
     def calculate_total_friction(
         self,
         trade_value: float,
+        side: str,
         liquidity_score: float | None = None,
     ) -> float:
         """Calculate total estimated trading friction."""
@@ -51,4 +59,5 @@ class FrictionModel:
         spread = self.calculate_spread_cost(trade_value)
         slippage = self.calculate_slippage(trade_value, liquidity_score=liquidity_score)
         uncertainty = self.calculate_execution_uncertainty_cost(trade_value)
-        return fee + spread + slippage + uncertainty
+        sell_tax = self.calculate_sell_tax(trade_value, side)
+        return fee + spread + slippage + uncertainty + sell_tax
