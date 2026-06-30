@@ -30,6 +30,7 @@ friction:
   spread_rate: 0.0005
   slippage_rate: 0.0005
   execution_uncertainty_rate: 0.0
+  sell_tax_rate: 0.002   # 코스피 매도 거래세(증권거래세 0.05% + 농어촌특별세 0.15%, 2026년)
 
 agent:
   type: baseline
