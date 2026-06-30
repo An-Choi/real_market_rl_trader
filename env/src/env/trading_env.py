@@ -77,6 +77,7 @@ class TradingEnvironment(gym.Env):
         self.current_step = 0
         self.cash = self.initial_cash
         self.units_held = 0
+        self.shares_held = 0.0
         self.entry_step: int | None = None
         self.entry_price: float | None = None
         self.portfolio_value = self.initial_cash
@@ -100,6 +101,7 @@ class TradingEnvironment(gym.Env):
         self.current_step = 0
         self.cash = self.initial_cash
         self.units_held = 0
+        self.shares_held = 0.0
         self.entry_step = None
         self.entry_price = None
         self.portfolio_value = self.initial_cash
@@ -124,9 +126,11 @@ class TradingEnvironment(gym.Env):
         forced_clear = False
 
         previous_value = self.portfolio_value
-        if is_last and self.units_held > 0:
+        if is_last:
+            # 마감 강제청산: agent action(Add/Hold)을 무시하고 무조건 Clear한다.
+            # 보유분이 없으면 Clear는 no-op이라 안전하며, 새 진입도 막힌다.
+            forced_clear = self.units_held > 0
             execution = self._execute_trade(ACTION_CLEAR)
-            forced_clear = True
         else:
             execution = self._execute_trade(action)
 
@@ -192,14 +196,38 @@ class TradingEnvironment(gym.Env):
         return float(portfolio_return - risk_penalty)
 
     def _execute_trade(self, action: int) -> TradeExecution:
-        """Execute a Unit-scaling trade at the current real Close."""
+        """Execute a Unit-scaling trade at the current real Close.
+
+        보유분은 실제 주식수(`shares_held`)로 추적한다. 매수는 1 Unit = 고정
+        notional만큼 현금을 쓰고 `notional/price`주를 취득, 매도는 보유 주식을
+        현재가로 현금화한다. 거래비용(거래세 포함)은 실제 거래 현금흐름
+        (`trade_value`) 기준으로 부과된다.
+        """
         price = float(self._row_at(self.current_step)[self.price_col])
         target_units = self._action_to_target_units(action)
         unit_notional = self.initial_cash * self.unit_fraction
         prev_units = self.units_held
         delta_units = target_units - prev_units
-        trade_value = delta_units * unit_notional
-        side = "sell" if delta_units < 0 else "buy"
+
+        if delta_units > 0:
+            # 매수: 고정 notional 지출, shares 누적.
+            trade_value = delta_units * unit_notional
+            side = "buy"
+            self.cash -= trade_value
+            self.shares_held += trade_value / price
+            if self.entry_step is None:
+                self.entry_step = self.current_step
+        elif delta_units < 0:
+            # 매도(Clear): 보유 주식을 현재가로 현금화. (long-only라 항상 전량 청산.)
+            shares_sold = self.shares_held
+            trade_value = -shares_sold * price
+            side = "sell"
+            self.cash += shares_sold * price
+            self.shares_held = 0.0
+        else:
+            trade_value = 0.0
+            side = "buy"
+
         liquidity_score = self._current_liquidity_score()
         friction_cost = (
             self.friction_model.calculate_total_friction(
@@ -210,28 +238,9 @@ class TradingEnvironment(gym.Env):
             if delta_units != 0
             else 0.0
         )
-
-        self.cash -= trade_value
         self.cash -= friction_cost
         self.units_held = target_units
-
-        # entry 가격/시점 갱신 (단일 처리 지점).
-        if delta_units > 0:
-            if prev_units == 0:
-                self.entry_price = price
-                self.entry_step = self.current_step
-            else:
-                # share 가중 평균. _held_market_value가 cost_basis * (price/entry)로
-                # 시가를 구하므로, 그 식이 실제 보유 주식수 기준 시가와 일치하려면
-                # entry_price가 share(=notional/price) 가중 평균이어야 한다.
-                prev_shares = prev_units * unit_notional / self.entry_price
-                add_shares = delta_units * unit_notional / price
-                self.entry_price = (
-                    (prev_units + delta_units) * unit_notional
-                    / (prev_shares + add_shares)
-                )
-        elif target_units == 0:
-            self.entry_price = None
+        if target_units == 0:
             self.entry_step = None
 
         execution = TradeExecution(
@@ -252,12 +261,8 @@ class TradingEnvironment(gym.Env):
         return self.units_held
 
     def _held_market_value(self, price: float) -> float:
-        """Current market value of held units (cost basis scaled by price move)."""
-        if self.units_held == 0 or self.entry_price is None:
-            return 0.0
-        unit_notional = self.initial_cash * self.unit_fraction
-        cost_basis = self.units_held * unit_notional
-        return cost_basis * (price / self.entry_price)
+        """Current market value of held shares (actual shares * current price)."""
+        return self.shares_held * price
 
     def _calculate_portfolio_value(self) -> float:
         """Mark-to-market: cash + held notional scaled by price change."""
