@@ -54,7 +54,7 @@ class BacktestEngine:
                 "action": action,
                 "reward": reward,
                 "portfolio_value": info["portfolio_value"],
-                "position": info["position"],
+                "units_held": info["units_held"],
                 "friction_cost": info["friction_cost"],
             }
             for key in BACKTEST_INFO_KEYS:

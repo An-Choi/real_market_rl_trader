@@ -18,12 +18,13 @@ features:
 
 environment:
   initial_cash: 10000.0
-  max_position: 1.0
+  unit_fraction: 0.20
+  max_units: 5
   risk_penalty_rate: 0.0
   action_space:
     0: Hold
-    1: Buy
-    2: Sell
+    1: Add 1 Unit
+    2: Clear
 
 friction:
   fee_rate: 0.001
@@ -42,10 +43,5 @@ backtest:
   max_steps:
   benchmark: buy_and_hold
 
-virtual_agents:
-  noise_strength: 0.001
-  trend_strength: 0.002
-  mean_reversion_strength: 0.001
-  max_agent_impact: 0.05
 
 seed: 42
