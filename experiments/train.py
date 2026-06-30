@@ -40,7 +40,7 @@ def build_sample_market_data(periods: int = 120) -> pd.DataFrame:
     volume = rng.integers(100_000, 500_000, size=periods)
     return pd.DataFrame(
         {
-            "Date": dates,
+            "Timestamp": dates,
             "Open": open_,
             "High": high,
             "Low": low,

@@ -90,6 +90,42 @@ def test_friction_counted_once_in_reward(flat_data: pd.DataFrame) -> None:
     assert reward == pytest.approx(expected)
 
 
+def test_multi_add_mark_to_market_uses_actual_shares() -> None:
+    """서로 다른 가격에 Add한 Unit의 mark-to-market은 실제 보유 주식 수 기준이어야 한다.
+
+    1 Unit = 고정 2000 notional. 100에 1 Unit(=20주), 200에 1 Unit(=10주)을 사면
+    총 30주. 현재가 200이면 보유분 시가는 30 * 200 = 6000이어야 한다.
+    friction을 0으로 두어 거래비용 드래그를 배제하고 순수 valuation만 검증한다.
+    """
+    prices = [100.0, 200.0, 200.0]
+    ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
+    data = pd.DataFrame(
+        {
+            "Timestamp": ts,
+            "Close": prices,
+            "ma_5": prices,
+        }
+    )
+    from friction.friction_model import FrictionModel
+
+    env = TradingEnvironment(
+        market_data=data,
+        feature_columns=["ma_5"],
+        initial_cash=10_000.0,
+        unit_fraction=0.20,
+        max_units=5,
+        friction_model=FrictionModel(
+            fee_rate=0.0, spread_rate=0.0, slippage_rate=0.0, sell_tax_rate=0.0
+        ),
+    )
+    env.reset(seed=0)
+    env.step(1)  # step 0: Add 1 Unit @100 → 20 shares
+    env.step(1)  # step 1: Add 1 Unit @200 → +10 shares (now 30 shares); valued @200
+
+    held_value = env.portfolio_value - env.cash
+    assert held_value == pytest.approx(6000.0)
+
+
 def test_clear_sell_tax_exact_amount(flat_data: pd.DataFrame) -> None:
     """매도(Clear) step에서 거래세가 정확히 abs(trade_value) * sell_tax_rate 만큼만
     매수 대비 추가된다.

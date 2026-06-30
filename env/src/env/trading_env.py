@@ -221,11 +221,14 @@ class TradingEnvironment(gym.Env):
                 self.entry_price = price
                 self.entry_step = self.current_step
             else:
-                prev_cost = prev_units * unit_notional
-                add_cost = delta_units * unit_notional
+                # share 가중 평균. _held_market_value가 cost_basis * (price/entry)로
+                # 시가를 구하므로, 그 식이 실제 보유 주식수 기준 시가와 일치하려면
+                # entry_price가 share(=notional/price) 가중 평균이어야 한다.
+                prev_shares = prev_units * unit_notional / self.entry_price
+                add_shares = delta_units * unit_notional / price
                 self.entry_price = (
-                    (prev_cost * self.entry_price + add_cost * price)
-                    / (prev_cost + add_cost)
+                    (prev_units + delta_units) * unit_notional
+                    / (prev_shares + add_shares)
                 )
         elif target_units == 0:
             self.entry_price = None
