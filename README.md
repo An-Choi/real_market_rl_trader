@@ -1,108 +1,68 @@
 # real-market-rl-trader
 
-Python 기반 강화학습 트레이딩 시스템의 초기 코드 구조입니다. 이 프로젝트는 완성된 모델이나 수익성 있는 전략을 제공하는 것이 아니라, 실제 시장 데이터를 backbone으로 사용하는 RL 트레이딩 실험을 이어가기 위한 skeleton code를 제공합니다.
+실제 시장 데이터로 강화학습 트레이딩을 실험하는 플랫폼입니다. 목표는 "잘 맞히는 모델"이 아니라 **재현 가능한 RL baseline** — 시장을 예측하는 대신, 시장 상태를 보고 단일 종목 포지션을 언제 키우고 정리할지를 학습합니다.
 
-## 프로젝트 개요
+## 개요
 
-`real-market-rl-trader`는 가격을 직접 예측하는 모델이 아닙니다. 시장 가격 데이터는 환경의 backbone으로 사용하고, agent는 미래 가격 자체를 예측하지 않습니다. 대신 market regime, liquidity, pressure, friction 정보를 관찰한 뒤 거래 여부와 포지션 방향을 결정합니다.
+실제 OHLCV를 환경의 backbone으로 두고, agent는 regime·liquidity·pressure·friction 신호를 관찰해 **포지션을 점진적으로 제어**합니다.
 
-초기 action space는 discrete action입니다.
+- **Action (3개, discrete):** `0` Hold · `1` Add 1 Unit · `2` Clear
+- **Unit scaling-in:** 1 Unit = 자본의 20%, 최대 5 Unit(=100%). Turtle Trading식 분할 진입. long-only.
+- **에피소드:** 1 종목 × 1 거래일. 장 마감에 강제 청산(overnight 없음).
+- **거래비용:** 수수료·스프레드·슬리피지 + 한국장 매도 증권거래세 0.20%. reward는 비용 차감 후 realized return.
 
-- `0`: Hold
-- `1`: Buy
-- `2`: Sell
-
-구조는 이후 position size, leverage, continuous action, portfolio-level allocation으로 확장할 수 있도록 열어두었습니다.
-
-## 핵심 아이디어
-
-- 실제 OHLCV 시장 데이터를 기반으로 환경을 구성합니다.
-- feature는 regime, liquidity, pressure 계열로 분리합니다.
-- friction은 fee, spread, slippage, execution uncertainty를 포함합니다.
-- reward는 `portfolio return - friction cost - risk penalty` 형태로 확장 가능한 틀만 둡니다.
-- RL agent는 Stable-Baselines3와 연결할 수 있는 wrapper 형태로 둡니다.
-- baseline agent와 backtest engine을 먼저 두어 RL 이전에도 실험 루프를 검증할 수 있게 합니다.
-
-## 폴더 구조
+## 구조
 
 ```text
 real-market-rl-trader/
-|
-├── README.md
-├── requirements.txt
-├── config/
-│   └── config.yaml
-|
+│
+├── env/
+│   ├── src/
+│   │   ├── env/
+│   │   ├── data/
+│   │   ├── friction/
+│   │   ├── pipeline/
+│   │   └── utils/
+│   ├── configs/
+│   └── tests/
+│
+├── agent/
+│   └── src/
+│       ├── models/
+│       └── policies/
+│
+├── experiments/
+├── evaluation/
+├── scripts/
+│
 ├── data/
 │   ├── raw/
 │   └── processed/
-|
-├── src/
-│   ├── main.py
-│   │
-│   ├── data/
-│   │   ├── data_collector.py
-│   │   └── data_loader.py
-│   │
-│   ├── features/
-│   │   ├── feature_engineer.py
-│   │   ├── regime_features.py
-│   │   ├── liquidity_features.py
-│   │   └── pressure_features.py
-│   │
-│   ├── env/
-│   │   ├── trading_env.py
-│   │   └── friction_model.py
-│   │
-│   ├── agent/
-│   │   ├── rl_agent.py
-│   │   └── baseline_agents.py
-│   │
-│   ├── backtest/
-│   │   ├── backtest_engine.py
-│   │   └── metrics.py
-│   │
-│   ├── paper_trading/
-│   │   └── paper_trading_engine.py
-│   │
-│   └── utils/
-│       ├── logger.py
-│       └── config_loader.py
-|
-└── notebooks/
-    └── quick_start.ipynb
+│
+└── docs/
 ```
 
-## 실행 방법
+## 시작하기
 
-Python 3.10+ 환경을 권장합니다.
+Python 3.10+ 권장. 인터프리터는 `python3`을 씁니다.
 
 ```bash
 pip install -r requirements.txt
-python src/main.py
+
+python3 experiments/train.py                    # PPO 학습
+python3 experiments/backtest.py                 # baseline/agent 백테스트
+python3 scripts/backfill.py --symbols 005930    # KIS 분봉 백필
+python3 -m pytest env/tests/ -v                 # 테스트
 ```
 
-`data/raw/sample_ohlcv.csv`가 있으면 해당 파일을 사용하고, 없으면 `main.py`에서 간단한 synthetic OHLCV 데이터를 만들어 전체 파이프라인을 smoke test합니다.
+KIS API 키는 `.env`에 둡니다(`.env.example` 참고). 샘플 데이터가 없으면 `train.py`가 synthetic OHLCV로 전체 파이프라인을 smoke test합니다.
 
 ## 현재 구현 범위
 
-- OHLCV 데이터 수집 및 로딩을 위한 skeleton
-- regime, liquidity, pressure feature 생성 함수 틀
-- fee, spread, slippage, execution uncertainty를 포함하는 friction model
-- Gymnasium 스타일의 discrete-action `TradingEnvironment`
-- Stable-Baselines3 연결을 위한 `RLAgent` wrapper
-- Buy-and-hold, moving average crossover, random, rule-based baseline agent 틀
-- agent와 environment를 연결하는 backtest loop
-- total return, Sharpe ratio, max drawdown, win rate, trade count, turnover metric 함수 틀
-- 실제 거래소 API 없이 동작 구조만 잡은 paper trading engine
-
-## 향후 확장 계획
-
-- KIS REST API 기반 historical 데이터 수집 구현
-- feature normalization, train/test split, walk-forward validation 추가
-- order book, tick, quote 데이터 기반 liquidity/pressure feature 확장
-- position size와 continuous action space 지원
-- slippage와 partial fill을 반영한 execution simulator 확장
-- Stable-Baselines3 PPO, DQN, A2C 학습 파이프라인 연결
-- 실험 tracking, checkpointing, model registry 추가
-- paper trading sandbox와 실거래 API adapter 분리
+- real-OHLCV 단일채널 `TradingEnvironment` (Gymnasium, Unit scaling-in, 1거래일 에피소드)
+- regime·liquidity·pressure feature 생성
+- 매도 거래세 포함 friction model
+- Stable-Baselines3 연결용 `RLAgent` wrapper
+- baseline agent (buy-and-hold, MA crossover, random 등)
+- agent ↔ env 백테스트 루프, 평가 metric (return / Sharpe / max drawdown / turnover 등)
+- 거래소 API 없이 동작 구조만 잡은 paper trading engine
