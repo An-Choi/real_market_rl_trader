@@ -4,7 +4,7 @@
 
 ## 개요
 
-실제 OHLCV를 환경의 backbone으로 두고, agent는 regime·liquidity·pressure·friction 신호를 관찰해 **포지션을 점진적으로 제어**합니다.
+실제 OHLCV를 환경의 backbone으로 두고, agent는 5분/30분 멀티타임프레임(MTF) feature와 포지션 상태를 관찰해 **포지션을 점진적으로 제어**합니다.
 
 - **Action (3개, discrete):** `0` Hold · `1` Add 1 Unit · `2` Clear
 - **Unit scaling-in:** 1 Unit = 자본의 20%, 최대 5 Unit(=100%). Turtle Trading식 분할 진입. long-only.
@@ -55,12 +55,12 @@ python3 scripts/backfill.py --symbols 005930    # KIS 분봉 백필
 python3 -m pytest env/tests/ -v                 # 테스트
 ```
 
-KIS API 키는 `.env`에 둡니다(`.env.example` 참고). 샘플 데이터가 없으면 `train.py`가 synthetic OHLCV로 전체 파이프라인을 smoke test합니다.
+KIS API 키는 `.env`에 둡니다(`.env.example` 참고). `train.py`는 real 분봉 데이터를 요구합니다 — 먼저 `scripts/backfill.py --symbols 005930`으로 `data/raw/`에 분봉을 백필해야 합니다(`data/raw/`·`data/processed/`는 git에서 제외되므로 fresh clone에는 없음). 이후 `build_features`가 `data/processed/`에 feature parquet 캐시를 만듭니다.
 
 ## 현재 구현 범위
 
 - real-OHLCV 단일채널 `TradingEnvironment` (Gymnasium, Unit scaling-in, 1거래일 에피소드)
-- regime·liquidity·pressure feature 생성
+- leakage-safe MTF feature 생성 (5분 micro + 30분 context, 총 9개; 1분봉→5분 그리드 causal resample)
 - 매도 거래세 포함 friction model
 - Stable-Baselines3 연결용 `RLAgent` wrapper
 - baseline agent (buy-and-hold, MA crossover, random 등)
