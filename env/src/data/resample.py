@@ -17,3 +17,37 @@ def add_minute_trading_value(minute_df: pd.DataFrame, ts_col: str = "Timestamp")
     first_of_day = out["MinuteTradingValue"].isna()
     out.loc[first_of_day, "MinuteTradingValue"] = out.loc[first_of_day, "TradingValue"]
     return out
+
+
+_AGG_5MIN = {
+    "Open": "first",
+    "High": "max",
+    "Low": "min",
+    "Close": "last",
+    "Volume": "sum",
+    "MinuteTradingValue": "sum",
+}
+
+
+def _resample_one_day(day_df: pd.DataFrame, rule: str, min_bars: int, ts_col: str) -> pd.DataFrame:
+    idx = day_df.set_index(pd.to_datetime(day_df[ts_col]))
+    counts = idx["Close"].resample(rule, label="right", closed="left").count()
+    agg = idx.resample(rule, label="right", closed="left").agg(_AGG_5MIN)
+    agg = agg[counts >= min_bars].dropna(subset=["Close"])
+    agg = agg.reset_index().rename(columns={"index": ts_col})
+    if ts_col not in agg.columns:  # resample index name 방어
+        agg = agg.rename(columns={agg.columns[0]: ts_col})
+    return agg
+
+
+def resample_5min(minute_df: pd.DataFrame, ts_col: str = "Timestamp") -> pd.DataFrame:
+    """거래일별 5분 causal resample. label=right, closed=left, 불완전 bucket drop."""
+    df = minute_df
+    if "MinuteTradingValue" not in df.columns:
+        df = add_minute_trading_value(df, ts_col)
+    ts = pd.to_datetime(df[ts_col])
+    frames = [
+        _resample_one_day(grp, "5min", min_bars=5, ts_col=ts_col)
+        for _, grp in df.groupby(ts.dt.date)
+    ]
+    return pd.concat(frames, ignore_index=True)
