@@ -122,6 +122,14 @@ def _today_bar_count(raw_dir: Path, symbol: str, today: date) -> int:
     return int((df["Timestamp"].dt.date == today).sum())
 
 
+def _today_bar_summary(bars: int) -> str:
+    if bars == EXPECTED_BARS_PER_DAY:
+        return str(bars)
+    if bars == 0:
+        return "0 (holiday or missing)"
+    return f"{bars} ⚠️ expected {EXPECTED_BARS_PER_DAY}"
+
+
 def _write_github_summary(text: str) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
@@ -173,10 +181,8 @@ def main() -> None:
                 if force_months else {}
             )
             bars = _today_bar_count(args.raw_dir, symbol, today)
-            gap = "" if bars in (0, EXPECTED_BARS_PER_DAY) else (
-                f" ⚠️ expected {EXPECTED_BARS_PER_DAY}")
             line = (f"| {symbol} | daily={daily_status} | minute={saved or '-'} "
-                    f"| force={force_results or '-'} | today_bars={bars}{gap} |")
+                    f"| force={force_results or '-'} | today_bars={_today_bar_summary(bars)} |")
             logging.info("summary: %s", line)
             _write_github_summary(line)
             continue

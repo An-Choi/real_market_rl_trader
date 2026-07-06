@@ -75,6 +75,13 @@ def test_today_bar_count_reads_current_partition(tmp_path) -> None:
     assert mod._today_bar_count(tmp_path, "000660", date(2026, 7, 6)) == 0       # 파티션 없음
 
 
+def test_today_bar_summary_flags_zero_and_partial_counts() -> None:
+    mod = _load_backfill()
+    assert mod._today_bar_summary(381) == "381"
+    assert mod._today_bar_summary(0) == "0 (holiday or missing)"
+    assert mod._today_bar_summary(120) == "120 ⚠️ expected 381"
+
+
 def test_write_github_summary_appends_when_env_set(tmp_path, monkeypatch) -> None:
     mod = _load_backfill()
     summary = tmp_path / "summary.md"

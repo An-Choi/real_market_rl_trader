@@ -246,9 +246,12 @@ def test_backfill_minute_monthly_overwrite_partitions_selective(tmp_path: Path) 
         _minute_df_for(day).to_parquet(d / f"{part}.parquet", index=False)
 
     fetcher = Mock()
-    # 7월 재수집 결과는 기존과 다른 내용 (새 거래일 추가 상황)
+    # 7월 재수집 결과는 기존 일자를 보존하면서 새 거래일이 추가된 상황
     fetcher.fetch_minute_range.side_effect = lambda start, end, max_pages_per_day: (
-        _minute_df_for(date(2025, 7, 4)) if start.month == 7 else _minute_df_for(start)
+        pd.concat([
+            _minute_df_for(date(2025, 7, 1)),
+            _minute_df_for(date(2025, 7, 4)),
+        ], ignore_index=True) if start.month == 7 else _minute_df_for(start)
     )
     collector = DataCollector(raw_data_dir=tmp_path)
 
@@ -260,6 +263,30 @@ def test_backfill_minute_monthly_overwrite_partitions_selective(tmp_path: Path) 
     assert saved == ["2025-07"]                                   # 6월은 스킵
     starts = [c.kwargs["start"] for c in fetcher.fetch_minute_range.call_args_list]
     assert starts == [date(2025, 7, 1)]                            # 7월만 fetch
+
+
+def test_backfill_minute_monthly_forced_partition_keeps_existing_on_shrink(
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1m"
+    d.mkdir(parents=True)
+    existing = _minute_df_days(2025, 7, [1, 2, 3])
+    existing.to_parquet(d / "2025-07.parquet", index=False)
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.return_value = _minute_df_days(2025, 7, [2, 3])
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    saved = collector.backfill_minute_monthly(
+        fetcher=fetcher, symbol="005930", start=date(2025, 7, 1), end=date(2025, 7, 4),
+        overwrite_partitions={"2025-07"},
+    )
+
+    assert saved == []
+    kept = pd.read_parquet(d / "2025-07.parquet")
+    pd.testing.assert_frame_equal(kept, existing)
 
 
 def test_backfill_minute_monthly_unchanged_refetch_not_reported(tmp_path: Path) -> None:

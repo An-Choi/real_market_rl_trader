@@ -35,6 +35,14 @@ def _normalize_for_compare(df: pd.DataFrame, column_order: list[str], time_col: 
     return df[column_order].sort_values(time_col).reset_index(drop=True)
 
 
+def _shrunk_minute_dates(existing: pd.DataFrame, new: pd.DataFrame) -> list[date]:
+    """Return dates whose row count is lower in the new minute data."""
+    old_counts = existing["Timestamp"].dt.date.value_counts()
+    new_counts = new["Timestamp"].dt.date.value_counts()
+    aligned = new_counts.reindex(old_counts.index, fill_value=0)
+    return old_counts.index[(aligned < old_counts)].tolist()
+
+
 @dataclass
 class DataCollector:
     """Collect raw OHLCV data and save to Parquet partitions."""
@@ -146,6 +154,15 @@ class DataCollector:
             )
             if df.empty:
                 continue
+            if path.exists() and not overwrite:
+                existing = pd.read_parquet(path)
+                shrunk = _shrunk_minute_dates(existing, df)
+                if shrunk:
+                    logging.warning(
+                        "[%s] minute partition %s: per-day rows shrank for %s; keeping existing",
+                        symbol, partition, shrunk,
+                    )
+                    continue
             if overwrite:
                 # 기존 --overwrite 전체 재수집 경로: 무조건 저장 (기존 동작 불변)
                 self.save_raw_parquet(df, symbol=symbol, interval="1m", partition=partition)
@@ -193,13 +210,8 @@ class DataCollector:
             path = self.raw_data_dir / symbol / "1m" / f"{label}.parquet"
             if path.exists():
                 existing = pd.read_parquet(path)
-                # 일자별 가드: 기존의 어떤 일자도 row 수가 줄면 교체 거부.
-                # (거래일 소실·총 row 감소·재분배를 모두 포함하는 단일 규칙)
-                old_counts = existing["Timestamp"].dt.date.value_counts()
-                new_counts = df["Timestamp"].dt.date.value_counts()
-                aligned = new_counts.reindex(old_counts.index, fill_value=0)
-                if (aligned < old_counts).any():
-                    shrunk = old_counts.index[(aligned < old_counts)].tolist()
+                shrunk = _shrunk_minute_dates(existing, df)
+                if shrunk:
                     logging.warning(
                         "[%s] force month %s: per-day rows shrank for %s; keeping existing",
                         symbol, label, shrunk,
