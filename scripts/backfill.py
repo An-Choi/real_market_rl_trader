@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -46,6 +46,25 @@ def _parse_symbols(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+def _parse_force_months(raw: str) -> list[str]:
+    """Parse comma-separated YYYY-MM labels; dedup preserving order."""
+    months: list[str] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if len(token) != 7 or token[4] != "-":
+            raise ValueError(f"--force-months expects YYYY-MM, got {token!r}")
+        try:
+            parsed = datetime.strptime(token, "%Y-%m")
+        except ValueError as exc:
+            raise ValueError(f"--force-months expects YYYY-MM, got {token!r}") from exc
+        label = f"{parsed.year:04d}-{parsed.month:02d}"
+        if label not in months:
+            months.append(label)
+    return months
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backfill KIS OHLCV for one or more symbols")
     parser.add_argument("--symbols", type=str, default=DEFAULT_SYMBOLS,
@@ -59,6 +78,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-minute", action="store_true")
     parser.add_argument("--overwrite", action="store_true",
                         help="Re-fetch and overwrite existing Parquet partitions")
+    parser.add_argument("--refresh-current", action="store_true",
+                        help="Daily-run mode: re-fetch current minute month + full daily refresh")
+    parser.add_argument("--force-months", type=str, default="",
+                        help="Comma-separated YYYY-MM minute months to force refetch")
     parser.add_argument("--raw-dir", type=Path, default=Path("data/raw"))
     parser.add_argument("--token-cache", type=Path, default=Path("data/.kis_token.json"))
     parser.add_argument("--rate-limit-sleep", type=float, default=0.4,
