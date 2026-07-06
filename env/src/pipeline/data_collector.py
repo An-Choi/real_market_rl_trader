@@ -99,17 +99,20 @@ class DataCollector:
         end: date,
         overwrite: bool = False,
         max_pages_per_day: int = 4,
+        overwrite_partitions: set[str] | None = None,
     ) -> list[str]:
         """Fetch minute data month-by-month, saving each month immediately.
 
         Crash-safe and resumable: a month whose Parquet already exists is
-        skipped unless ``overwrite`` is True. Returns saved partition labels.
+        skipped unless ``overwrite`` is True or its label is in
+        ``overwrite_partitions``. Returns labels actually written.
         """
+        forced = overwrite_partitions or set()
         saved: list[str] = []
         for w_start, w_end in _month_windows(start, end):
             partition = f"{w_start.year:04d}-{w_start.month:02d}"
             path = self.raw_data_dir / symbol / "1m" / f"{partition}.parquet"
-            if path.exists() and not overwrite:
+            if path.exists() and not overwrite and partition not in forced:
                 logging.info("Skip existing minute partition: %s", path)
                 continue
             df = fetcher.fetch_minute_range(
@@ -117,7 +120,16 @@ class DataCollector:
             )
             if df.empty:
                 continue
-            self.save_raw_parquet(df, symbol=symbol, interval="1m", partition=partition)
-            saved.append(partition)
-            logging.info("Saved minute partition %s (%d rows)", partition, len(df))
+            if overwrite:
+                # 기존 --overwrite 전체 재수집 경로: 무조건 저장 (기존 동작 불변)
+                self.save_raw_parquet(df, symbol=symbol, interval="1m", partition=partition)
+                written: Path | None = path
+            else:
+                # 신규 파티션 및 overwrite_partitions 경로: semantic 비교 후 저장
+                written = self.save_if_changed(
+                    df, symbol=symbol, interval="1m", partition=partition, time_col="Timestamp"
+                )
+            if written is not None:
+                saved.append(partition)
+                logging.info("Saved minute partition %s (%d rows)", partition, len(df))
         return saved
