@@ -1,0 +1,5 @@
+# Data pipeline / collection job only (scripts/backfill.py + env/src/pipeline)
+pandas
+pyarrow
+requests
+python-dotenv
