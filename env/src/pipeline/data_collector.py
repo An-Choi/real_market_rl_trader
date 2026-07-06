@@ -26,6 +26,11 @@ def _month_windows(start: date, end: date) -> list[tuple[date, date]]:
     return windows
 
 
+def _normalize_for_compare(df: pd.DataFrame, column_order: list[str], time_col: str) -> pd.DataFrame:
+    """Normalize DataFrame for semantic comparison: reorder columns, sort by time, reset index."""
+    return df[column_order].sort_values(time_col).reset_index(drop=True)
+
+
 @dataclass
 class DataCollector:
     """Collect raw OHLCV data and save to Parquet partitions."""
@@ -61,6 +66,30 @@ class DataCollector:
             if tmp_path.exists():
                 tmp_path.unlink()
         return output_path
+
+    def save_if_changed(
+        self,
+        data: pd.DataFrame,
+        symbol: str,
+        interval: str,
+        partition: str,
+        time_col: str,
+    ) -> Path | None:
+        """Save unless the existing partition is semantically identical.
+
+        Comparison: same column set, rows sorted by ``time_col``, index and
+        column order normalized, then strict ``DataFrame.equals`` (dtype-sensitive).
+        """
+        path = self.raw_data_dir / symbol / interval / f"{partition}.parquet"
+        new_norm = _normalize_for_compare(data, data.columns.tolist(), time_col)
+        if path.exists():
+            existing = pd.read_parquet(path, engine="pyarrow")
+            if set(existing.columns) == set(data.columns):
+                old_norm = _normalize_for_compare(existing, data.columns.tolist(), time_col)
+                if old_norm.equals(new_norm):
+                    logging.info("Unchanged, skip write: %s", path)
+                    return None
+        return self.save_raw_parquet(data, symbol=symbol, interval=interval, partition=partition)
 
     def backfill_minute_monthly(
         self,

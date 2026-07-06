@@ -194,3 +194,34 @@ def test_backfill_minute_monthly_skips_existing_unless_overwrite(tmp_path: Path)
     )
     assert saved2 == ["2025-05", "2025-06", "2025-07"]
     assert fetcher.fetch_minute_range.call_count == 3
+
+
+def test_save_if_changed_skips_identical_content(tmp_path: Path) -> None:
+    df = _minute_df_for(date(2025, 7, 1))
+    collector = DataCollector(raw_data_dir=tmp_path)
+    first = collector.save_if_changed(df, symbol="005930", interval="1m",
+                                      partition="2025-07", time_col="Timestamp")
+    assert first is not None and first.exists()
+
+    # 행 순서·컬럼 순서를 섞어도 내용이 같으면 스킵
+    shuffled = df.iloc[::-1][list(reversed(df.columns.tolist()))]
+    second = collector.save_if_changed(shuffled, symbol="005930", interval="1m",
+                                       partition="2025-07", time_col="Timestamp")
+    assert second is None
+
+
+def test_save_if_changed_writes_on_content_or_dtype_change(tmp_path: Path) -> None:
+    df = _minute_df_for(date(2025, 7, 1))
+    collector = DataCollector(raw_data_dir=tmp_path)
+    collector.save_if_changed(df, symbol="005930", interval="1m",
+                              partition="2025-07", time_col="Timestamp")
+
+    changed = df.copy()
+    changed.loc[0, "Close"] = 2.0
+    assert collector.save_if_changed(changed, symbol="005930", interval="1m",
+                                     partition="2025-07", time_col="Timestamp") is not None
+
+    dtype_drift = changed.copy()
+    dtype_drift["Volume"] = dtype_drift["Volume"].astype("float64")
+    assert collector.save_if_changed(dtype_drift, symbol="005930", interval="1m",
+                                     partition="2025-07", time_col="Timestamp") is not None
