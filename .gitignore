@@ -33,6 +33,5 @@ wandb/
 
 # KIS credentials and data
 .env
-data/.kis_token*
-data/raw/
-data/processed/
+# data/ is a nested clone of An-Choi/rl-trader-data (own git repo)
+data/
