@@ -91,6 +91,28 @@ class DataCollector:
                     return None
         return self.save_raw_parquet(data, symbol=symbol, interval=interval, partition=partition)
 
+    def refresh_daily_all(self, fetcher, symbol: str, start: date, end: date) -> str:
+        """Full daily refresh into a single ``1d/all.parquet``.
+
+        Adjusted daily prices can change retroactively on corporate actions,
+        so the whole range is re-fetched and atomically replaced every run.
+        Order: fetch OK -> write (or semantic skip) -> remove legacy files.
+        Empty fetch touches nothing and returns "empty".
+        """
+        df = fetcher.fetch_daily(start=start, end=end)
+        if df.empty:
+            logging.warning("[%s] daily fetch returned no rows; keeping existing files", symbol)
+            return "empty"
+        written = self.save_if_changed(
+            df, symbol=symbol, interval="1d", partition="all", time_col="Date"
+        )
+        directory = self.raw_data_dir / symbol / "1d"
+        for legacy in directory.glob("*.parquet"):
+            if legacy.name != "all.parquet":
+                legacy.unlink()
+                logging.info("Removed legacy daily file: %s", legacy)
+        return "replaced" if written is not None else "unchanged"
+
     def backfill_minute_monthly(
         self,
         fetcher,

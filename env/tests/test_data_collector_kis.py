@@ -271,3 +271,68 @@ def test_backfill_minute_monthly_unchanged_refetch_not_reported(tmp_path: Path) 
     )
     assert saved == []                                             # 저장 없음
     assert (d / "2025-07.parquet").stat().st_mtime_ns == before_mtime  # 파일 안 건드림
+
+
+def _daily_df(dates: list[str]) -> pd.DataFrame:
+    n = len(dates)
+    return pd.DataFrame({
+        "Date": pd.to_datetime(dates),
+        "Open": [1.0] * n, "High": [1.0] * n, "Low": [1.0] * n, "Close": [1.0] * n,
+        "Volume": [1] * n, "TradingValue": [1] * n, "Change": [0.0] * n,
+    })
+
+
+def test_refresh_daily_all_writes_single_file_and_removes_legacy(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1d"
+    d.mkdir(parents=True)
+    _daily_df(["2024-01-03"]).to_parquet(d / "2020-2026.parquet", index=False)  # 레거시
+
+    fetcher = Mock()
+    fetcher.fetch_daily.return_value = _daily_df(["2024-01-03", "2024-01-04"])
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    status = collector.refresh_daily_all(fetcher, symbol="005930",
+                                         start=date(2024, 1, 1), end=date(2024, 1, 31))
+
+    assert status == "replaced"
+    assert sorted(p.name for p in d.glob("*.parquet")) == ["all.parquet"]  # 레거시 제거됨
+
+
+def test_refresh_daily_all_unchanged_still_removes_legacy(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    df = _daily_df(["2024-01-03", "2024-01-04"])
+    d = tmp_path / "005930" / "1d"
+    d.mkdir(parents=True)
+    df.to_parquet(d / "all.parquet", index=False)
+    _daily_df(["2024-01-03"]).to_parquet(d / "2020-2026.parquet", index=False)  # 레거시 공존
+
+    fetcher = Mock()
+    fetcher.fetch_daily.return_value = df.copy()
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    status = collector.refresh_daily_all(fetcher, symbol="005930",
+                                         start=date(2024, 1, 1), end=date(2024, 1, 31))
+
+    assert status == "unchanged"
+    assert sorted(p.name for p in d.glob("*.parquet")) == ["all.parquet"]
+
+
+def test_refresh_daily_all_empty_fetch_touches_nothing(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1d"
+    d.mkdir(parents=True)
+    _daily_df(["2024-01-03"]).to_parquet(d / "2020-2026.parquet", index=False)
+
+    fetcher = Mock()
+    fetcher.fetch_daily.return_value = pd.DataFrame()
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    status = collector.refresh_daily_all(fetcher, symbol="005930",
+                                         start=date(2024, 1, 1), end=date(2024, 1, 31))
+
+    assert status == "empty"
+    assert (d / "2020-2026.parquet").exists()   # fetch 실패 시 레거시도 보존
