@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -40,6 +41,7 @@ from pipeline.kis_historical import KISHistoricalFetcher  # noqa: E402
 
 
 DEFAULT_SYMBOLS = "005930"
+EXPECTED_BARS_PER_DAY = 381
 
 
 def _parse_symbols(raw: str) -> list[str]:
@@ -106,6 +108,28 @@ def _backfill_daily(collector, fetcher, symbol, start, end, raw_dir, overwrite) 
         logging.info("Saved daily Parquet: %s", saved)
 
 
+def _current_month_label(today: date) -> str:
+    return f"{today.year:04d}-{today.month:02d}"
+
+
+def _today_bar_count(raw_dir: Path, symbol: str, today: date) -> int:
+    import pandas as pd
+
+    path = raw_dir / symbol / "1m" / f"{_current_month_label(today)}.parquet"
+    if not path.exists():
+        return 0
+    df = pd.read_parquet(path, columns=["Timestamp"])
+    return int((df["Timestamp"].dt.date == today).sum())
+
+
+def _write_github_summary(text: str) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    with open(summary_path, "a", encoding="utf-8") as fh:
+        fh.write(text + "\n")
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = parse_args()
@@ -122,11 +146,42 @@ def main() -> None:
     minute_end = date.today()
     minute_start = minute_end - timedelta(days=args.minute_days)
 
+    force_months = _parse_force_months(args.force_months)
+    today = date.today()
+
+    if args.refresh_current:
+        _write_github_summary("| symbol | daily | minute saved | force | today bars |")
+        _write_github_summary("|---|---|---|---|---|")
+
     for symbol in symbols:
         fetcher = KISHistoricalFetcher(
             auth=auth, symbol=symbol, rate_limit_sleep=args.rate_limit_sleep
         )
         logging.info("=== Backfill %s ===", symbol)
+
+        if args.refresh_current:
+            daily_status = collector.refresh_daily_all(
+                fetcher, symbol=symbol, start=daily_start, end=daily_end
+            )
+            saved = collector.backfill_minute_monthly(
+                fetcher=fetcher, symbol=symbol,
+                start=minute_start, end=minute_end,
+                overwrite_partitions={_current_month_label(today)},
+            )
+            force_results = (
+                collector.force_month_refetch(fetcher, symbol=symbol, months=force_months)
+                if force_months else {}
+            )
+            bars = _today_bar_count(args.raw_dir, symbol, today)
+            gap = "" if bars in (0, EXPECTED_BARS_PER_DAY) else (
+                f" ⚠️ expected {EXPECTED_BARS_PER_DAY}")
+            line = (f"| {symbol} | daily={daily_status} | minute={saved or '-'} "
+                    f"| force={force_results or '-'} | today_bars={bars}{gap} |")
+            logging.info("summary: %s", line)
+            _write_github_summary(line)
+            continue
+
+        # 기존 일회성 백필 경로 (불변)
         if not args.skip_daily:
             _backfill_daily(collector, fetcher, symbol, daily_start, daily_end,
                             args.raw_dir, args.overwrite)
