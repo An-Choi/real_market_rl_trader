@@ -11,15 +11,19 @@ from pathlib import Path
 import pandas as pd
 
 
+def _month_end(day: date) -> date:
+    """Return the last day of the month containing the given date."""
+    if day.month == 12:
+        return date(day.year, 12, 31)
+    return date(day.year, day.month + 1, 1) - timedelta(days=1)
+
+
 def _month_windows(start: date, end: date) -> list[tuple[date, date]]:
     """Split [start, end] into per-calendar-month windows, clamped to the range."""
     windows: list[tuple[date, date]] = []
     cur = start
     while cur <= end:
-        if cur.month == 12:
-            month_last = date(cur.year, 12, 31)
-        else:
-            month_last = date(cur.year, cur.month + 1, 1) - timedelta(days=1)
+        month_last = _month_end(cur)
         w_end = min(month_last, end)
         windows.append((cur, w_end))
         cur = w_end + timedelta(days=1)
@@ -155,3 +159,55 @@ class DataCollector:
                 saved.append(partition)
                 logging.info("Saved minute partition %s (%d rows)", partition, len(df))
         return saved
+
+    def force_month_refetch(
+        self,
+        fetcher,
+        symbol: str,
+        months: list[str],
+        max_pages_per_day: int = 4,
+        today: date | None = None,
+    ) -> dict[str, str]:
+        """Explicit full-month recovery windows, independent of the rolling range.
+
+        Guards against rolling-boundary truncation: never replaces an existing
+        partition with strictly fewer unique trading days.
+        """
+        today = today or date.today()
+        results: dict[str, str] = {}
+        for label in months:
+            year, month = int(label[:4]), int(label[5:7])
+            w_start = date(year, month, 1)
+            if w_start > today:
+                logging.warning("[%s] force month %s is in the future; skipping", symbol, label)
+                results[label] = "invalid_future"
+                continue
+            w_end = min(_month_end(w_start), today)
+            df = fetcher.fetch_minute_range(
+                start=w_start, end=w_end, max_pages_per_day=max_pages_per_day
+            )
+            if df.empty:
+                logging.warning("[%s] force month %s: no data (rolling limit?)", symbol, label)
+                results[label] = "unavailable"
+                continue
+            path = self.raw_data_dir / symbol / "1m" / f"{label}.parquet"
+            if path.exists():
+                existing = pd.read_parquet(path)
+                # 일자별 가드: 기존의 어떤 일자도 row 수가 줄면 교체 거부.
+                # (거래일 소실·총 row 감소·재분배를 모두 포함하는 단일 규칙)
+                old_counts = existing["Timestamp"].dt.date.value_counts()
+                new_counts = df["Timestamp"].dt.date.value_counts()
+                aligned = new_counts.reindex(old_counts.index, fill_value=0)
+                if (aligned < old_counts).any():
+                    shrunk = old_counts.index[(aligned < old_counts)].tolist()
+                    logging.warning(
+                        "[%s] force month %s: per-day rows shrank for %s; keeping existing",
+                        symbol, label, shrunk,
+                    )
+                    results[label] = "kept_existing"
+                    continue
+            written = self.save_if_changed(
+                df, symbol=symbol, interval="1m", partition=label, time_col="Timestamp"
+            )
+            results[label] = "replaced" if written is not None else "unchanged"
+        return results

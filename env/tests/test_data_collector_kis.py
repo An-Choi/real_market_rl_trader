@@ -10,6 +10,15 @@ import pytest
 from pipeline.data_collector import DataCollector
 
 
+def _minute_df_days(year: int, month: int, days: list[int]) -> pd.DataFrame:
+    """Helper to create a minute-level DataFrame with specified days."""
+    ts = [pd.Timestamp(year=year, month=month, day=d, hour=9, tz="Asia/Seoul") for d in days]
+    n = len(ts)
+    return pd.DataFrame({"Timestamp": ts, "Open": [1.0] * n, "High": [1.0] * n,
+                         "Low": [1.0] * n, "Close": [1.0] * n,
+                         "Volume": [1] * n, "TradingValue": [1] * n})
+
+
 @pytest.fixture
 def sample_daily() -> pd.DataFrame:
     return pd.DataFrame({
@@ -336,3 +345,137 @@ def test_refresh_daily_all_empty_fetch_touches_nothing(tmp_path: Path) -> None:
 
     assert status == "empty"
     assert (d / "2020-2026.parquet").exists()   # fetch 실패 시 레거시도 보존
+
+
+def test_force_month_refetch_uses_full_month_window(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.return_value = _minute_df_days(2025, 7, [1, 2, 3])
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    result = collector.force_month_refetch(fetcher, symbol="005930", months=["2025-07"],
+                                           today=date(2026, 7, 6))
+
+    assert result == {"2025-07": "replaced"}
+    fetcher.fetch_minute_range.assert_called_once_with(
+        start=date(2025, 7, 1), end=date(2025, 7, 31), max_pages_per_day=4
+    )
+    assert (tmp_path / "005930" / "1m" / "2025-07.parquet").exists()
+
+
+def test_force_month_refetch_clamps_current_month_to_today(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.return_value = _minute_df_days(2026, 7, [1, 2, 3])
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    collector.force_month_refetch(fetcher, symbol="005930", months=["2026-07"],
+                                  today=date(2026, 7, 6))
+
+    fetcher.fetch_minute_range.assert_called_once_with(
+        start=date(2026, 7, 1), end=date(2026, 7, 6), max_pages_per_day=4
+    )
+
+
+def test_force_month_refetch_coverage_guard_keeps_existing(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1m"
+    d.mkdir(parents=True)
+    _minute_df_days(2025, 7, [1, 2, 3, 4, 7]).to_parquet(d / "2025-07.parquet", index=False)
+
+    fetcher = Mock()  # rolling 경계에 잘려 3거래일만 응답
+    fetcher.fetch_minute_range.return_value = _minute_df_days(2025, 7, [3, 4, 7])
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    result = collector.force_month_refetch(fetcher, symbol="005930", months=["2025-07"],
+                                           today=date(2026, 7, 6))
+
+    assert result == {"2025-07": "kept_existing"}
+    kept = pd.read_parquet(d / "2025-07.parquet")
+    assert kept["Timestamp"].dt.date.nunique() == 5                # 기존 데이터 보존
+
+
+def test_force_month_refetch_row_count_guard_keeps_existing(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1m"
+    d.mkdir(parents=True)
+    # 기존: 2거래일, 일자당 2행 = 총 4행
+    existing = pd.concat([
+        _minute_df_days(2025, 7, [1, 2]),
+        _minute_df_days(2025, 7, [1, 2]).assign(
+            Timestamp=lambda x: x["Timestamp"] + pd.Timedelta(minutes=1)),
+    ]).sort_values("Timestamp").reset_index(drop=True)
+    existing.to_parquet(d / "2025-07.parquet", index=False)
+
+    fetcher = Mock()  # 같은 2거래일이지만 일자당 1행 = 총 2행 (partial 응답)
+    fetcher.fetch_minute_range.return_value = _minute_df_days(2025, 7, [1, 2])
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    result = collector.force_month_refetch(fetcher, symbol="005930", months=["2025-07"],
+                                           today=date(2026, 7, 6))
+
+    assert result == {"2025-07": "kept_existing"}                  # 거래일 수 같아도 row 감소면 거부
+    assert len(pd.read_parquet(d / "2025-07.parquet")) == 4
+
+
+def test_force_month_refetch_per_day_guard_rejects_redistribution(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1m"
+    d.mkdir(parents=True)
+    # 기존: 7/1에 2행, 7/2에 2행 (총 4행)
+    existing = pd.concat([
+        _minute_df_days(2025, 7, [1, 2]),
+        _minute_df_days(2025, 7, [1, 2]).assign(
+            Timestamp=lambda x: x["Timestamp"] + pd.Timedelta(minutes=1)),
+    ]).sort_values("Timestamp").reset_index(drop=True)
+    existing.to_parquet(d / "2025-07.parquet", index=False)
+
+    # 새 응답: 7/1은 1행으로 줄고 7/2는 3행으로 늘어 총 4행 동일 (재분배)
+    new = pd.concat([
+        _minute_df_days(2025, 7, [1, 2]),
+        _minute_df_days(2025, 7, [2]).assign(
+            Timestamp=lambda x: x["Timestamp"] + pd.Timedelta(minutes=1)),
+        _minute_df_days(2025, 7, [2]).assign(
+            Timestamp=lambda x: x["Timestamp"] + pd.Timedelta(minutes=2)),
+    ]).sort_values("Timestamp").reset_index(drop=True)
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.return_value = new
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    result = collector.force_month_refetch(fetcher, symbol="005930", months=["2025-07"],
+                                           today=date(2026, 7, 6))
+
+    assert result == {"2025-07": "kept_existing"}                  # 총 row 같아도 7/1 감소면 거부
+
+
+def test_force_month_refetch_future_month_is_invalid(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    fetcher = Mock()
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    result = collector.force_month_refetch(fetcher, symbol="005930", months=["2026-08"],
+                                           today=date(2026, 7, 6))
+
+    assert result == {"2026-08": "invalid_future"}
+    fetcher.fetch_minute_range.assert_not_called()                 # API 호출 없이 거부
+
+
+def test_force_month_refetch_empty_is_unavailable(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.return_value = pd.DataFrame()
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    result = collector.force_month_refetch(fetcher, symbol="005930", months=["2024-01"],
+                                           today=date(2026, 7, 6))
+
+    assert result == {"2024-01": "unavailable"}
+    assert not (tmp_path / "005930" / "1m" / "2024-01.parquet").exists()
