@@ -266,3 +266,54 @@ class TestLoadArtifact:
     def test_invalid_artifact_rejected_before_sb3_load(self, tmp_path):
         with pytest.raises(ArtifactError, match="metadata.json"):
             load_artifact(tmp_path / "nonexistent")
+
+
+class TestMetadataHardening:
+    """P1/P2 방어: 경로 탈출 및 타입 위조 metadata 거부."""
+
+    def test_normalization_file_path_traversal_rejected(self):
+        data = make_metadata().to_dict()
+        data["normalization"] = {"type": "sb3_vecnormalize", "file": "../escaped.pkl"}
+        with pytest.raises(ArtifactError, match="normalization"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_normalization_file_absolute_path_rejected(self):
+        data = make_metadata().to_dict()
+        data["normalization"] = {"type": "sb3_vecnormalize", "file": "/tmp/escaped.pkl"}
+        with pytest.raises(ArtifactError, match="normalization"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_artifact_id_with_path_separator_rejected(self):
+        data = make_metadata(artifact_id="../evil").to_dict()
+        with pytest.raises(ArtifactError, match="artifact_id"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_string_feature_columns_rejected(self):
+        # len("abcdefghi") + len("abcd") == 13이라 dim 검사만으로는 통과하는 위조
+        data = make_metadata().to_dict()
+        data["feature_columns"] = "abcdefghi"
+        data["portfolio_state_fields"] = "abcd"
+        with pytest.raises(ArtifactError, match="feature_columns"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_non_string_column_element_rejected(self):
+        data = make_metadata().to_dict()
+        data["feature_columns"] = list(range(9))
+        with pytest.raises(ArtifactError, match="feature_columns"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_non_string_action_labels_rejected(self):
+        data = make_metadata().to_dict()
+        data["action_space"] = {"type": "discrete", "n": 3, "labels": [0, 1, 2]}
+        with pytest.raises(ArtifactError, match="action_space"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_save_rejects_normalization_escape(self, built_agent, tmp_path):
+        pkl = tmp_path / "stats.pkl"
+        pkl.write_bytes(b"fake-stats")
+        meta = make_metadata(
+            normalization={"type": "sb3_vecnormalize", "file": "../escaped.pkl"}
+        )
+        with pytest.raises(ArtifactError):
+            save_artifact(built_agent, meta, tmp_path / "artifacts", vecnormalize_path=pkl)
+        assert not (tmp_path / "escaped.pkl").exists()

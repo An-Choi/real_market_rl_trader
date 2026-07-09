@@ -46,6 +46,15 @@ class ArtifactError(Exception):
     """Artifact 저장/로드/검증 실패."""
 
 
+def _require_simple_name(value: Any, field_name: str) -> None:
+    """경로로 쓰이는 필드는 단순 이름만 허용 — 절대경로/구분자/..로 artifact 밖 탈출 금지."""
+    if not isinstance(value, str) or not value:
+        raise ArtifactError(f"{field_name} must be a non-empty string: {value!r}")
+    p = Path(value)
+    if p.is_absolute() or p.name != value or value in (".", ".."):
+        raise ArtifactError(f"{field_name} must be a bare name (no path parts): {value!r}")
+
+
 @dataclass
 class ArtifactMetadata:
     artifact_format_version: int
@@ -82,6 +91,15 @@ class ArtifactMetadata:
             raise ArtifactError(
                 f"unsupported artifact_format_version: {self.artifact_format_version}"
             )
+        _require_simple_name(self.artifact_id, "artifact_id")
+        for list_field in ("feature_columns", "portfolio_state_fields"):
+            value = getattr(self, list_field)
+            if not isinstance(value, list) or not all(
+                isinstance(col, str) and col for col in value
+            ):
+                raise ArtifactError(
+                    f"{list_field} must be a list of non-empty strings: {value!r}"
+                )
         expected_dim = len(self.feature_columns) + len(self.portfolio_state_fields)
         if self.observation_dim != expected_dim:
             raise ArtifactError(
@@ -94,12 +112,15 @@ class ArtifactMetadata:
         labels = action.get("labels")
         if not isinstance(labels, list) or action.get("n") != len(labels):
             raise ArtifactError(f"invalid action_space: n != len(labels): {action!r}")
+        if not all(isinstance(label, str) and label for label in labels):
+            raise ArtifactError(f"invalid action_space: labels must be strings: {action!r}")
         norm = self.normalization
         if norm is not None:
             if not isinstance(norm, dict) or norm.get("type") not in KNOWN_NORMALIZATION_TYPES:
                 raise ArtifactError(f"invalid normalization block: {norm!r}")
             if not norm.get("file"):
                 raise ArtifactError(f"invalid normalization block, missing file: {norm!r}")
+            _require_simple_name(norm["file"], "normalization file")
 
 
 def make_artifact_id(algo: str, feature_schema_version: int) -> str:
