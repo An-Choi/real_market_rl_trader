@@ -7,8 +7,12 @@ load_metadata()는 SB3 없이 동작해야 한다(서버가 모델 로드 전에
 from __future__ import annotations
 
 import dataclasses
+import json
+import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -96,3 +100,57 @@ class ArtifactMetadata:
                 raise ArtifactError(f"invalid normalization block: {norm!r}")
             if not norm.get("file"):
                 raise ArtifactError(f"invalid normalization block, missing file: {norm!r}")
+
+
+def make_artifact_id(algo: str, feature_schema_version: int) -> str:
+    """생성 시점 포함한 artifact ID: "{algo소문자}-fs{v}-{YYYYMMDD-HHMMSS}" (UTC)."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"{algo.lower()}-fs{feature_schema_version}-{ts}"
+
+
+def save_artifact(
+    agent: Any,
+    metadata: ArtifactMetadata,
+    artifacts_dir: "str | Path",
+    *,
+    vecnormalize_path: "str | Path | None" = None,
+) -> Path:
+    """검증 → temp 디렉토리에 전부 기록 → 성공 시에만 최종 경로로 rename.
+
+    실패 시 최종 artifact 경로에 partial 상태가 남지 않는다.
+    """
+    metadata.validate()
+    if getattr(agent, "model", None) is None:
+        raise ArtifactError("agent has no built model to save")
+
+    norm = metadata.normalization
+    if norm is None and vecnormalize_path is not None:
+        raise ArtifactError("vecnormalize_path given but metadata.normalization is null")
+    if norm is not None:
+        if vecnormalize_path is None:
+            raise ArtifactError("metadata.normalization set but vecnormalize_path missing")
+        if not Path(vecnormalize_path).is_file():
+            raise ArtifactError(f"vecnormalize file not found: {vecnormalize_path}")
+
+    artifacts_dir = Path(artifacts_dir)
+    final_dir = artifacts_dir / metadata.artifact_id
+    if final_dir.exists():
+        raise ArtifactError(f"artifact already exists: {final_dir}")
+
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = artifacts_dir / f".tmp-{metadata.artifact_id}-{uuid.uuid4().hex[:8]}"
+    try:
+        tmp_dir.mkdir()
+        agent.model.save(str(tmp_dir / MODEL_FILENAME))
+        if norm is not None:
+            shutil.copy2(vecnormalize_path, tmp_dir / norm["file"])
+        payload = json.dumps(metadata.to_dict(), indent=2, ensure_ascii=False)
+        (tmp_dir / METADATA_FILENAME).write_text(payload, encoding="utf-8")
+        tmp_dir.rename(final_dir)
+    except ArtifactError:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise ArtifactError(f"artifact save failed: {exc}") from exc
+    return final_dir

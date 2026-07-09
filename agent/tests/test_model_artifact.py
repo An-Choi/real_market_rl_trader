@@ -2,10 +2,45 @@
 
 from __future__ import annotations
 
+import json
+
+import gymnasium as gym
+import numpy as np
 import pytest
+from gymnasium import spaces
 
 from data.feature_engineer import FeatureEngineer
-from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha
+from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha, make_artifact_id, save_artifact
+from models.rl_agent import RLAgent
+
+OBS_DIM = 13
+
+
+class DummyTradingEnv(gym.Env):
+    """PPO build용 초소형 env. 학습하지 않으므로 dynamics는 무의미."""
+
+    def __init__(self):
+        super().__init__()
+        self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
+        self.action_space = spaces.Discrete(3)
+        self._t = 0
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self._t = 0
+        return np.zeros(OBS_DIM, dtype=np.float32), {}
+
+    def step(self, action):
+        self._t += 1
+        return np.zeros(OBS_DIM, dtype=np.float32), 0.0, self._t >= 5, False, {}
+
+
+@pytest.fixture(scope="module")
+def built_agent():
+    agent = RLAgent(model_kwargs={"seed": 0})
+    agent.build(DummyTradingEnv())
+    return agent
+
 
 PORTFOLIO_STATE_FIELDS = [
     "units_held_frac", "unrealized_pnl_norm",
@@ -86,3 +121,52 @@ class TestCurrentGitSha:
         # workspace root 등 git repo 밖에서 실행돼도 모듈 위치 기준으로 repo를 찾는다.
         monkeypatch.chdir(tmp_path)
         assert current_git_sha() != "unknown"
+
+
+class TestSaveArtifact:
+    def test_save_creates_versioned_dir(self, built_agent, tmp_path):
+        meta = make_metadata()
+        out = save_artifact(built_agent, meta, tmp_path)
+        assert out == tmp_path / meta.artifact_id
+        assert (out / "model.zip").is_file()
+        saved = json.loads((out / "metadata.json").read_text(encoding="utf-8"))
+        assert saved == meta.to_dict()
+
+    def test_duplicate_id_rejected(self, built_agent, tmp_path):
+        meta = make_metadata()
+        save_artifact(built_agent, meta, tmp_path)
+        with pytest.raises(ArtifactError, match="exists"):
+            save_artifact(built_agent, meta, tmp_path)
+
+    def test_unbuilt_agent_rejected(self, tmp_path):
+        with pytest.raises(ArtifactError, match="model"):
+            save_artifact(RLAgent(), make_metadata(), tmp_path)
+
+    def test_normalization_block_without_file_rejected(self, built_agent, tmp_path):
+        meta = make_metadata(
+            normalization={"type": "sb3_vecnormalize", "file": "vecnormalize.pkl"}
+        )
+        with pytest.raises(ArtifactError, match="vecnormalize"):
+            save_artifact(built_agent, meta, tmp_path)
+
+    def test_vecnormalize_file_copied(self, built_agent, tmp_path):
+        pkl = tmp_path / "stats.pkl"
+        pkl.write_bytes(b"fake-stats")
+        meta = make_metadata(
+            normalization={"type": "sb3_vecnormalize", "file": "vecnormalize.pkl"}
+        )
+        out = save_artifact(built_agent, meta, tmp_path / "artifacts", vecnormalize_path=pkl)
+        assert (out / "vecnormalize.pkl").read_bytes() == b"fake-stats"
+
+    def test_midwrite_failure_leaves_nothing(self, built_agent, tmp_path):
+        # json 직렬화 불가 객체로 metadata.json 기록 단계 실패 유도
+        # (validate()는 train_data 내용을 보지 않으므로 통과함)
+        meta = make_metadata(train_data={"symbols": object()})
+        with pytest.raises(ArtifactError):
+            save_artifact(built_agent, meta, tmp_path)
+        assert not (tmp_path / meta.artifact_id).exists()
+        assert list(tmp_path.glob(".tmp-*")) == []
+
+    def test_make_artifact_id_format(self):
+        aid = make_artifact_id("PPO", 2)
+        assert aid.startswith("ppo-fs2-")
