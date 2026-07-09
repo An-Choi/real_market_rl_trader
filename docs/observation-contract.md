@@ -83,6 +83,9 @@ artifact `metadata.json`의 `normalization` 필드:
 - `{"type": "sb3_vecnormalize", "file": "vecnormalize.pkl"}` — 학습이 VecNormalize를
   사용한 경우. 서버는 해당 stats로 observation을 정규화한 뒤 모델에 넣는다
   (stats는 학습 시점에 freeze된 값 — 서빙 중 업데이트 금지).
+  `file`은 artifact 디렉토리 안의 **단순 파일명**만 허용된다 (경로 구분자/`..`/절대경로 거부).
+  참고: `models.artifact.load_artifact()`는 stats 적용이 구현되기 전까지 normalization
+  artifact 로드를 거부한다 (스케일이 어긋난 조용한 predict 방지).
 
 ## 6. metadata.json 필드 명세
 

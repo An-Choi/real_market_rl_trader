@@ -19,6 +19,7 @@ from typing import Any
 SUPPORTED_FORMAT_VERSIONS = (1,)
 KNOWN_ACTION_TYPES = ("discrete",)
 KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize",)
+REQUIRED_ENV_PARAMS = ("unit_fraction", "max_units", "initial_cash")
 METADATA_FILENAME = "metadata.json"
 MODEL_FILENAME = "model.zip"
 
@@ -77,6 +78,8 @@ class ArtifactMetadata:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ArtifactMetadata:
+        if not isinstance(data, dict):
+            raise ArtifactError(f"metadata must be a JSON object, got: {type(data).__name__}")
         names = [f.name for f in dataclasses.fields(cls)]
         missing = [n for n in names if n not in data]
         if missing:
@@ -121,6 +124,16 @@ class ArtifactMetadata:
             if not norm.get("file"):
                 raise ArtifactError(f"invalid normalization block, missing file: {norm!r}")
             _require_simple_name(norm["file"], "normalization file")
+        env = self.env_params
+        if not isinstance(env, dict):
+            raise ArtifactError(f"env_params must be a dict: {env!r}")
+        missing_params = [k for k in REQUIRED_ENV_PARAMS if k not in env]
+        if missing_params:
+            raise ArtifactError(f"env_params missing keys: {missing_params}")
+        for key in REQUIRED_ENV_PARAMS:
+            value = env[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ArtifactError(f"env_params[{key!r}] must be numeric: {value!r}")
 
 
 def make_artifact_id(algo: str, feature_schema_version: int) -> str:
@@ -157,6 +170,12 @@ def load_artifact(
     meta = load_metadata(artifact_dir)
     if meta.algo != "PPO":
         raise ArtifactError(f"unsupported algo: {meta.algo}")
+    if meta.normalization is not None:
+        # VecNormalize stats 적용은 미구현 — 조용히 스케일 어긋난 predict를 내느니 거부.
+        raise ArtifactError(
+            "normalization artifact is not supported by load_artifact yet; "
+            "apply the stats per docs/observation-contract.md §5"
+        )
 
     from models.rl_agent import RLAgent  # SB3 의존 경로 — 함수 내부 import 유지
 

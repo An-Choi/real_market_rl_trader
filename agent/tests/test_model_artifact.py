@@ -317,3 +317,43 @@ class TestMetadataHardening:
         with pytest.raises(ArtifactError):
             save_artifact(built_agent, meta, tmp_path / "artifacts", vecnormalize_path=pkl)
         assert not (tmp_path / "escaped.pkl").exists()
+
+    def test_from_dict_non_mapping_rejected(self):
+        with pytest.raises(ArtifactError, match="JSON object"):
+            ArtifactMetadata.from_dict(42)
+
+    def test_load_metadata_non_object_json_rejected(self, tmp_path):
+        art = tmp_path / "scalar"
+        art.mkdir()
+        (art / "metadata.json").write_text("42", encoding="utf-8")
+        (art / "model.zip").write_bytes(b"fake")
+        with pytest.raises(ArtifactError, match="JSON object"):
+            load_metadata(art)
+
+    def test_env_params_non_dict_rejected(self):
+        data = make_metadata().to_dict()
+        data["env_params"] = "not-a-dict"
+        with pytest.raises(ArtifactError, match="env_params"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_env_params_missing_keys_rejected(self):
+        data = make_metadata().to_dict()
+        data["env_params"] = {"unit_fraction": 0.2}
+        with pytest.raises(ArtifactError, match="env_params"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_env_params_non_numeric_rejected(self):
+        data = make_metadata().to_dict()
+        data["env_params"] = {"unit_fraction": "0.2", "max_units": 5, "initial_cash": 100_000_000}
+        with pytest.raises(ArtifactError, match="env_params"):
+            ArtifactMetadata.from_dict(data)
+
+    def test_load_artifact_rejects_normalization_artifact(self, tmp_path):
+        # VecNormalize 적용은 미지원 — 조용히 스케일 어긋난 predict를 내느니 로드를 거부한다.
+        meta = make_metadata(
+            normalization={"type": "sb3_vecnormalize", "file": "vecnormalize.pkl"}
+        )
+        art = _write_fake_artifact(tmp_path, meta.to_dict())
+        (art / "vecnormalize.pkl").write_bytes(b"fake-stats")
+        with pytest.raises(ArtifactError, match="normalization"):
+            load_artifact(art)
