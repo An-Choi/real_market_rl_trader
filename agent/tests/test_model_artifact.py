@@ -357,3 +357,11 @@ class TestMetadataHardening:
         (art / "vecnormalize.pkl").write_bytes(b"fake-stats")
         with pytest.raises(ArtifactError, match="normalization"):
             load_artifact(art)
+
+    def test_normalization_file_reserved_name_rejected(self):
+        # "model.zip"이면 모델이 stats로 덮어써지고, "metadata.json"이면 stats가 유실된다.
+        for reserved in ("model.zip", "metadata.json"):
+            data = make_metadata().to_dict()
+            data["normalization"] = {"type": "sb3_vecnormalize", "file": reserved}
+            with pytest.raises(ArtifactError, match="reserved"):
+                ArtifactMetadata.from_dict(data)

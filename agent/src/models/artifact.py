@@ -124,6 +124,9 @@ class ArtifactMetadata:
             if not norm.get("file"):
                 raise ArtifactError(f"invalid normalization block, missing file: {norm!r}")
             _require_simple_name(norm["file"], "normalization file")
+            if norm["file"] in (MODEL_FILENAME, METADATA_FILENAME):
+                # model.zip이면 모델이 stats로 덮어써지고, metadata.json이면 stats가 유실된다.
+                raise ArtifactError(f"normalization file uses a reserved name: {norm['file']!r}")
         env = self.env_params
         if not isinstance(env, dict):
             raise ArtifactError(f"env_params must be a dict: {env!r}")
