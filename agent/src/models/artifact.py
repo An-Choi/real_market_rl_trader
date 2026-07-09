@@ -108,6 +108,26 @@ def make_artifact_id(algo: str, feature_schema_version: int) -> str:
     return f"{algo.lower()}-fs{feature_schema_version}-{ts}"
 
 
+def load_metadata(artifact_dir: "str | Path") -> ArtifactMetadata:
+    """metadata.json만 파싱·검증. SB3 불필요 — 서버가 모델 로드 전에 쓰는 경로."""
+    artifact_dir = Path(artifact_dir)
+    meta_path = artifact_dir / METADATA_FILENAME
+    if not meta_path.is_file():
+        raise ArtifactError(f"metadata.json not found in: {artifact_dir}")
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ArtifactError(f"failed to parse {meta_path}: {exc}") from exc
+    meta = ArtifactMetadata.from_dict(data)
+    if not (artifact_dir / MODEL_FILENAME).is_file():
+        raise ArtifactError(f"model.zip not found in: {artifact_dir}")
+    if meta.normalization is not None:
+        norm_file = artifact_dir / meta.normalization["file"]
+        if not norm_file.is_file():
+            raise ArtifactError(f"normalization file not found: {norm_file}")
+    return meta
+
+
 def save_artifact(
     agent: Any,
     metadata: ArtifactMetadata,

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -10,7 +13,7 @@ import pytest
 from gymnasium import spaces
 
 from data.feature_engineer import FeatureEngineer
-from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha, make_artifact_id, save_artifact
+from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha, load_metadata, make_artifact_id, save_artifact
 from models.rl_agent import RLAgent
 
 OBS_DIM = 13
@@ -67,6 +70,18 @@ def make_metadata(**overrides) -> ArtifactMetadata:
     )
     base.update(overrides)
     return ArtifactMetadata(**base)
+
+
+def _write_fake_artifact(root, meta_dict, with_model=True):
+    """SB3 없이 만드는 가짜 artifact (load_metadata 단독 테스트용)."""
+    art = root / meta_dict["artifact_id"]
+    art.mkdir(parents=True)
+    (art / "metadata.json").write_text(
+        json.dumps(meta_dict, ensure_ascii=False), encoding="utf-8"
+    )
+    if with_model:
+        (art / "model.zip").write_bytes(b"fake")
+    return art
 
 
 class TestArtifactMetadata:
@@ -170,3 +185,55 @@ class TestSaveArtifact:
     def test_make_artifact_id_format(self):
         aid = make_artifact_id("PPO", 2)
         assert aid.startswith("ppo-fs2-")
+
+
+class TestLoadMetadata:
+    def test_load_valid(self, tmp_path):
+        art = _write_fake_artifact(tmp_path, make_metadata().to_dict())
+        meta = load_metadata(art)
+        assert meta == make_metadata()
+
+    def test_missing_metadata_json(self, tmp_path):
+        (tmp_path / "empty-art").mkdir()
+        with pytest.raises(ArtifactError, match="metadata.json"):
+            load_metadata(tmp_path / "empty-art")
+
+    def test_corrupt_json(self, tmp_path):
+        art = tmp_path / "bad"
+        art.mkdir()
+        (art / "metadata.json").write_text("{not json", encoding="utf-8")
+        with pytest.raises(ArtifactError, match="parse"):
+            load_metadata(art)
+
+    def test_missing_model_zip(self, tmp_path):
+        art = _write_fake_artifact(tmp_path, make_metadata().to_dict(), with_model=False)
+        with pytest.raises(ArtifactError, match="model.zip"):
+            load_metadata(art)
+
+    def test_missing_normalization_file(self, tmp_path):
+        meta = make_metadata(
+            normalization={"type": "sb3_vecnormalize", "file": "vecnormalize.pkl"}
+        )
+        art = _write_fake_artifact(tmp_path, meta.to_dict())
+        with pytest.raises(ArtifactError, match="vecnormalize.pkl"):
+            load_metadata(art)
+
+    def test_no_sb3_in_fresh_subprocess(self, tmp_path):
+        # 같은 프로세스 검사는 앞선 PPO 테스트가 SB3를 이미 로딩해 순서 의존적으로
+        # 거짓 실패한다. fresh subprocess에서 load_metadata만 실행해 확인한다.
+        art = _write_fake_artifact(tmp_path, make_metadata().to_dict())
+        root = Path(__file__).resolve().parents[2]
+        code = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(root / 'agent' / 'src')!r})\n"
+            f"from models.artifact import load_metadata\n"
+            f"meta = load_metadata({str(art)!r})\n"
+            "assert meta.algo == 'PPO'\n"
+            "assert 'stable_baselines3' not in sys.modules, 'SB3 imported!'\n"
+            "print('OK')\n"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "OK" in proc.stdout
