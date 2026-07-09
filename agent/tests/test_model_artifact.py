@@ -173,6 +173,12 @@ class TestSaveArtifact:
         out = save_artifact(built_agent, meta, tmp_path / "artifacts", vecnormalize_path=pkl)
         assert (out / "vecnormalize.pkl").read_bytes() == b"fake-stats"
 
+    def test_vecnormalize_path_without_block_rejected(self, built_agent, tmp_path):
+        pkl = tmp_path / "stats.pkl"
+        pkl.write_bytes(b"fake-stats")
+        with pytest.raises(ArtifactError, match="null"):
+            save_artifact(built_agent, make_metadata(), tmp_path, vecnormalize_path=pkl)
+
     def test_midwrite_failure_leaves_nothing(self, built_agent, tmp_path):
         # json 직렬화 불가 객체로 metadata.json 기록 단계 실패 유도
         # (validate()는 train_data 내용을 보지 않으므로 통과함)
