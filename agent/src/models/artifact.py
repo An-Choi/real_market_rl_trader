@@ -128,6 +128,22 @@ def load_metadata(artifact_dir: "str | Path") -> ArtifactMetadata:
     return meta
 
 
+def load_artifact(
+    artifact_dir: "str | Path", env: Any = None
+) -> "tuple[Any, ArtifactMetadata]":
+    """metadata 검증 통과 후에만 SB3 모델을 로드한다."""
+    artifact_dir = Path(artifact_dir)
+    meta = load_metadata(artifact_dir)
+    if meta.algo != "PPO":
+        raise ArtifactError(f"unsupported algo: {meta.algo}")
+
+    from models.rl_agent import RLAgent  # SB3 의존 경로 — 함수 내부 import 유지
+
+    agent = RLAgent(model_name=meta.algo, policy=meta.policy)
+    agent.load(str(artifact_dir / MODEL_FILENAME), env=env)
+    return agent, meta
+
+
 def save_artifact(
     agent: Any,
     metadata: ArtifactMetadata,

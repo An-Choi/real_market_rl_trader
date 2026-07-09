@@ -13,7 +13,7 @@ import pytest
 from gymnasium import spaces
 
 from data.feature_engineer import FeatureEngineer
-from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha, load_metadata, make_artifact_id, save_artifact
+from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha, load_artifact, load_metadata, make_artifact_id, save_artifact
 from models.rl_agent import RLAgent
 
 OBS_DIM = 13
@@ -237,3 +237,26 @@ class TestLoadMetadata:
         )
         assert proc.returncode == 0, proc.stderr
         assert "OK" in proc.stdout
+
+
+class TestLoadArtifact:
+    def test_roundtrip_predict_identical(self, built_agent, tmp_path):
+        meta = make_metadata()
+        out = save_artifact(built_agent, meta, tmp_path)
+
+        loaded_agent, loaded_meta = load_artifact(out)
+        assert loaded_meta == meta
+
+        obs = np.arange(OBS_DIM, dtype=np.float32) / OBS_DIM
+        original_action, _ = built_agent.predict(obs, deterministic=True)
+        loaded_action, _ = loaded_agent.predict(obs, deterministic=True)
+        assert loaded_action == original_action
+
+    def test_non_ppo_algo_rejected(self, tmp_path):
+        art = _write_fake_artifact(tmp_path, make_metadata(algo="DQN").to_dict())
+        with pytest.raises(ArtifactError, match="DQN"):
+            load_artifact(art)
+
+    def test_invalid_artifact_rejected_before_sb3_load(self, tmp_path):
+        with pytest.raises(ArtifactError, match="metadata.json"):
+            load_artifact(tmp_path / "nonexistent")
