@@ -7,7 +7,9 @@ load_metadata()는 SB3 없이 동작해야 한다(서버가 모델 로드 전에
 from __future__ import annotations
 
 import dataclasses
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 SUPPORTED_FORMAT_VERSIONS = (1,)
@@ -15,6 +17,25 @@ KNOWN_ACTION_TYPES = ("discrete",)
 KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize",)
 METADATA_FILENAME = "metadata.json"
 MODEL_FILENAME = "model.zip"
+
+# artifact.py: agent/src/models/ → repo root는 3단계 위
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def current_git_sha() -> str:
+    """저장 시점 repo 상태 추적용. 실패해도 저장을 막지 않는다("unknown")."""
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", str(_REPO_ROOT), "status", "--porcelain"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return f"{sha}-dirty" if status else sha
 
 
 class ArtifactError(Exception):

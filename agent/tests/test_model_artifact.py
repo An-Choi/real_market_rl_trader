@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from data.feature_engineer import FeatureEngineer
-from models.artifact import ArtifactError, ArtifactMetadata
+from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha
 
 PORTFOLIO_STATE_FIELDS = [
     "units_held_frac", "unrealized_pnl_norm",
@@ -75,3 +75,14 @@ class TestArtifactMetadata:
         data["normalization"] = {"type": "minmax", "file": "x.pkl"}
         with pytest.raises(ArtifactError, match="normalization"):
             ArtifactMetadata.from_dict(data)
+
+
+class TestCurrentGitSha:
+    def test_returns_nonempty(self):
+        sha = current_git_sha()
+        assert isinstance(sha, str) and sha
+
+    def test_cwd_independent(self, tmp_path, monkeypatch):
+        # workspace root 등 git repo 밖에서 실행돼도 모듈 위치 기준으로 repo를 찾는다.
+        monkeypatch.chdir(tmp_path)
+        assert current_git_sha() != "unknown"
