@@ -13,6 +13,12 @@ environment:
   unit_fraction: 0.20
   max_units: 5
   risk_penalty_rate: 0.0
+  turnover_penalty_rate: 0.0
+  drawdown_penalty_rate: 0.05
+  downside_penalty_rate: 0.10
+  benchmark_relative_rate: 0.05
+  reward_scale: 100.0
+  reward_return_mode: log_return
   action_space:
     0: Hold
     1: Add 1 Unit
@@ -29,7 +35,25 @@ agent:
   type: baseline
   baseline_name: buy_and_hold
   rl_model_name: PPO
-  total_timesteps: 10000
+  total_timesteps: 300000
+  normalization:
+    enabled: true
+    clip: 5.0
+  ppo:
+    learning_rate: 0.0003
+    n_steps: 2048
+    batch_size: 256
+    n_epochs: 10
+    gamma: 0.995
+    gae_lambda: 0.95
+    clip_range: 0.2
+    ent_coef: 0.01
+    vf_coef: 0.5
+    max_grad_norm: 0.5
+    target_kl: 0.03
+    policy_kwargs:
+      net_arch: [128, 128]
+    verbose: 1
 
 backtest:
   max_steps:
