@@ -11,17 +11,23 @@ import json
 import shutil
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 SUPPORTED_FORMAT_VERSIONS = (1,)
 KNOWN_ACTION_TYPES = ("discrete",)
-KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize",)
+KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize", "feature_standardization")
 REQUIRED_ENV_PARAMS = ("unit_fraction", "max_units", "initial_cash")
 METADATA_FILENAME = "metadata.json"
 MODEL_FILENAME = "model.zip"
+DEFAULT_PORTFOLIO_STATE_FIELDS = [
+    "units_held_frac",
+    "unrealized_pnl_norm",
+    "holding_duration_norm",
+    "tod_frac",
+]
 
 # artifact.py: agent/src/models/ → repo root는 3단계 위
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -72,6 +78,7 @@ class ArtifactMetadata:
     train_git_sha: str
     train_data: dict[str, Any]
     env_params: dict[str, Any]
+    training_params: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -80,11 +87,18 @@ class ArtifactMetadata:
     def from_dict(cls, data: dict[str, Any]) -> ArtifactMetadata:
         if not isinstance(data, dict):
             raise ArtifactError(f"metadata must be a JSON object, got: {type(data).__name__}")
-        names = [f.name for f in dataclasses.fields(cls)]
-        missing = [n for n in names if n not in data]
+        fields = list(dataclasses.fields(cls))
+        missing = [
+            item.name
+            for item in fields
+            if item.name not in data
+            and item.default is dataclasses.MISSING
+            and item.default_factory is dataclasses.MISSING
+        ]
         if missing:
             raise ArtifactError(f"metadata missing fields: {missing}")
-        meta = cls(**{n: data[n] for n in names})
+        values = {item.name: data[item.name] for item in fields if item.name in data}
+        meta = cls(**values)
         meta.validate()
         return meta
 
@@ -137,12 +151,51 @@ class ArtifactMetadata:
             value = env[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ArtifactError(f"env_params[{key!r}] must be numeric: {value!r}")
+        if not isinstance(self.training_params, dict):
+            raise ArtifactError("training_params must be a dict")
 
 
 def make_artifact_id(algo: str, feature_schema_version: int) -> str:
     """생성 시점 포함한 artifact ID: "{algo소문자}-fs{v}-{YYYYMMDD-HHMMSS}" (UTC)."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     return f"{algo.lower()}-fs{feature_schema_version}-{ts}"
+
+
+def make_training_metadata(
+    *,
+    agent: Any,
+    symbol: str,
+    featured_data: Any,
+    feature_schema_version: int,
+    feature_columns: list[str],
+    env_params: dict[str, Any],
+    portfolio_state_fields: list[str] | None = None,
+    normalization: dict[str, Any] | None = None,
+    training_params: dict[str, Any] | None = None,
+) -> ArtifactMetadata:
+    """Build versioned artifact metadata from a completed training run."""
+    portfolio_fields = portfolio_state_fields or list(DEFAULT_PORTFOLIO_STATE_FIELDS)
+    timestamps = featured_data["Timestamp"]
+    train_start = str(timestamps.min().date()) if not timestamps.empty else "unknown"
+    train_end = str(timestamps.max().date()) if not timestamps.empty else "unknown"
+
+    return ArtifactMetadata(
+        artifact_format_version=1,
+        artifact_id=make_artifact_id(agent.model_name, feature_schema_version),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        algo=agent.model_name,
+        policy=agent.policy,
+        feature_schema_version=feature_schema_version,
+        feature_columns=list(feature_columns),
+        portfolio_state_fields=portfolio_fields,
+        observation_dim=len(feature_columns) + len(portfolio_fields),
+        action_space={"type": "discrete", "n": 3, "labels": ["hold", "add_unit", "clear"]},
+        normalization=normalization,
+        train_git_sha=current_git_sha(),
+        train_data={"symbols": [symbol], "start": train_start, "end": train_end},
+        env_params=env_params,
+        training_params=dict(training_params or {}),
+    )
 
 
 def load_metadata(artifact_dir: "str | Path") -> ArtifactMetadata:
@@ -173,7 +226,10 @@ def load_artifact(
     meta = load_metadata(artifact_dir)
     if meta.algo != "PPO":
         raise ArtifactError(f"unsupported algo: {meta.algo}")
-    if meta.normalization is not None:
+    if (
+        meta.normalization is not None
+        and meta.normalization["type"] == "sb3_vecnormalize"
+    ):
         # VecNormalize stats 적용은 미구현 — 조용히 스케일 어긋난 predict를 내느니 거부.
         raise ArtifactError(
             "normalization artifact is not supported by load_artifact yet; "
@@ -182,7 +238,24 @@ def load_artifact(
 
     from models.rl_agent import RLAgent  # SB3 의존 경로 — 함수 내부 import 유지
 
-    agent = RLAgent(model_name=meta.algo, policy=meta.policy)
+    normalizer = None
+    if meta.normalization is not None:
+        from models.normalization import FeatureNormalizer
+
+        try:
+            normalizer = FeatureNormalizer.load(
+                artifact_dir / meta.normalization["file"]
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise ArtifactError(f"failed to load normalization stats: {exc}") from exc
+        if list(normalizer.feature_columns) != meta.feature_columns:
+            raise ArtifactError("normalization feature columns do not match metadata")
+
+    agent = RLAgent(
+        model_name=meta.algo,
+        policy=meta.policy,
+        observation_normalizer=normalizer,
+    )
     agent.load(str(artifact_dir / MODEL_FILENAME), env=env)
     return agent, meta
 
@@ -193,6 +266,7 @@ def save_artifact(
     artifacts_dir: "str | Path",
     *,
     vecnormalize_path: "str | Path | None" = None,
+    normalization_path: "str | Path | None" = None,
 ) -> Path:
     """검증 → temp 디렉토리에 전부 기록 → 성공 시에만 최종 경로로 rename.
 
@@ -203,13 +277,18 @@ def save_artifact(
         raise ArtifactError("agent has no built model to save")
 
     norm = metadata.normalization
-    if norm is None and vecnormalize_path is not None:
-        raise ArtifactError("vecnormalize_path given but metadata.normalization is null")
+    if vecnormalize_path is not None and normalization_path is not None:
+        raise ArtifactError("provide only one normalization stats path")
+    stats_path = normalization_path or vecnormalize_path
+    if norm is None and stats_path is not None:
+        raise ArtifactError("normalization path given but metadata.normalization is null")
     if norm is not None:
-        if vecnormalize_path is None:
-            raise ArtifactError("metadata.normalization set but vecnormalize_path missing")
-        if not Path(vecnormalize_path).is_file():
-            raise ArtifactError(f"vecnormalize file not found: {vecnormalize_path}")
+        if stats_path is None:
+            raise ArtifactError(
+                "metadata.normalization set but vecnormalize/normalization stats path missing"
+            )
+        if not Path(stats_path).is_file():
+            raise ArtifactError(f"normalization file not found: {stats_path}")
 
     artifacts_dir = Path(artifacts_dir)
     final_dir = artifacts_dir / metadata.artifact_id
@@ -222,7 +301,7 @@ def save_artifact(
         tmp_dir.mkdir()
         agent.model.save(str(tmp_dir / MODEL_FILENAME))
         if norm is not None:
-            shutil.copy2(vecnormalize_path, tmp_dir / norm["file"])
+            shutil.copy2(stats_path, tmp_dir / norm["file"])
         payload = json.dumps(metadata.to_dict(), indent=2, ensure_ascii=False)
         (tmp_dir / METADATA_FILENAME).write_text(payload, encoding="utf-8")
         tmp_dir.rename(final_dir)

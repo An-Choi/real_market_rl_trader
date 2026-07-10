@@ -1,7 +1,8 @@
-"""Smoke-test training/backtest pipeline for the reorganized project."""
+"""Train a PPO agent and save a versioned model artifact."""
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -15,52 +16,57 @@ for path in (ENV_SRC, AGENT_SRC, PROJECT_ROOT):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-from data.data_loader import DataLoader
-from data.feature_engineer import FeatureEngineer
-from env.trading_env import TradingEnvironment
-from evaluation.metrics import summarize_backtest
-from experiments.backtest_engine import BacktestEngine
-from friction.friction_model import FrictionModel
-from policies.baseline_agents import BuyAndHoldAgent
+from experiments.common import load_feature_data, make_data_loader
+from models.training import train_ppo_artifact
+from models.walk_forward import split_by_trading_day
 from utils.config_loader import load_config
 from utils.logger import setup_logger
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train PPO on prepared market data")
+    parser.add_argument("--symbol", type=str, default=None)
+    parser.add_argument("--total-timesteps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--split", choices=("all", "train", "validation", "test"), default="train")
+    parser.add_argument("--force-rebuild", action="store_true")
+    parser.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    return parser.parse_args()
+
+
 def main() -> None:
-    """Run the end-to-end baseline pipeline."""
     logger = setup_logger()
+    args = parse_args()
     config = load_config(PROJECT_ROOT / "env" / "configs" / "config.yaml")
 
-    from data.feature_builder import build_features  # local import to keep top clean
+    symbol = args.symbol or config["data"]["symbol"]
+    total_timesteps = args.total_timesteps or config["agent"]["total_timesteps"]
+    seed = args.seed if args.seed is not None else config.get("seed", 42)
 
-    data_loader = DataLoader(
-        raw_data_dir=PROJECT_ROOT / config["data"]["raw_dir"],
-        processed_data_dir=PROJECT_ROOT / config["data"]["processed_dir"],
+    data_loader = make_data_loader(project_root=PROJECT_ROOT, config=config)
+    featured_data = load_feature_data(
+        symbol=symbol,
+        data_loader=data_loader,
+        force_rebuild=args.force_rebuild,
     )
-    symbol = config["data"]["symbol"]
-    featured_data = build_features(symbol, data_loader)
-    feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
-
-    friction_model = FrictionModel(**config["friction"])
-    environment = TradingEnvironment(
-        market_data=featured_data,
-        feature_columns=feature_columns,
-        initial_cash=config["environment"]["initial_cash"],
-        unit_fraction=config["environment"]["unit_fraction"],
-        max_units=config["environment"]["max_units"],
-        friction_model=friction_model,
-        risk_penalty_rate=config["environment"]["risk_penalty_rate"],
+    featured_data = split_by_trading_day(featured_data, split=args.split)
+    logger.info(
+        "Training %s for %d timesteps on %s (%s split)",
+        config["agent"]["rl_model_name"],
+        total_timesteps,
+        symbol,
+        args.split,
     )
-    agent = BuyAndHoldAgent()
-    backtest_engine = BacktestEngine(agent=agent, environment=environment)
-    results = backtest_engine.run(
-        max_steps=config["backtest"].get("max_steps"),
-        seed=config.get("seed", 42),
+    artifact_path = train_ppo_artifact(
+        featured_data=featured_data,
+        symbol=symbol,
+        config=config,
+        total_timesteps=total_timesteps,
+        seed=seed,
+        artifacts_dir=PROJECT_ROOT / args.artifacts_dir,
     )
-    metrics = summarize_backtest(results)
-
-    logger.info("Backtest metrics: %s", metrics)
-    print(metrics)
+    logger.info("Saved artifact: %s", artifact_path)
+    print(artifact_path)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ htmlcov/
 logs/
 runs/
 wandb/
+artifacts/
 
 # KIS credentials and data
 .env

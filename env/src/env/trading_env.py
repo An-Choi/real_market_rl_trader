@@ -10,6 +10,7 @@ import pandas as pd
 from gymnasium import spaces
 
 from friction.friction_model import FrictionModel
+from env.reward import RewardConfig, RewardTerms, calculate_reward_terms
 
 
 ACTION_HOLD = 0
@@ -42,6 +43,12 @@ class TradingEnvironment(gym.Env):
         max_units: int = 5,
         friction_model: FrictionModel | None = None,
         risk_penalty_rate: float = 0.0,
+        turnover_penalty_rate: float = 0.0,
+        drawdown_penalty_rate: float = 0.0,
+        downside_penalty_rate: float = 0.0,
+        benchmark_relative_rate: float = 0.0,
+        reward_scale: float = 1.0,
+        reward_return_mode: str = "simple_return",
     ) -> None:
         """Real-OHLCV intraday Unit-scaling environment.
 
@@ -64,6 +71,15 @@ class TradingEnvironment(gym.Env):
         self.max_units = max_units
         self.friction_model = friction_model or FrictionModel()
         self.risk_penalty_rate = risk_penalty_rate
+        self.reward_config = RewardConfig(
+            inventory_penalty_rate=risk_penalty_rate,
+            turnover_penalty_rate=turnover_penalty_rate,
+            drawdown_penalty_rate=drawdown_penalty_rate,
+            downside_penalty_rate=downside_penalty_rate,
+            benchmark_relative_rate=benchmark_relative_rate,
+            reward_scale=reward_scale,
+            return_mode=reward_return_mode,
+        )
 
         self.action_space = spaces.Discrete(3)
         observation_size = len(self.feature_columns) + 4
@@ -81,6 +97,7 @@ class TradingEnvironment(gym.Env):
         self.entry_step: int | None = None
         self.entry_price: float | None = None
         self.portfolio_value = self.initial_cash
+        self.peak_portfolio_value = self.initial_cash
         self.trade_history: list[TradeExecution] = []
 
     def reset(self, seed: int | None = None, options: dict | None = None):
@@ -93,8 +110,7 @@ class TradingEnvironment(gym.Env):
                 d = pd.Timestamp(d).date()
             self._active_date = d
         else:
-            rng = np.random.default_rng(seed)
-            idx = int(rng.integers(0, len(self._available_dates)))
+            idx = int(self.np_random.integers(0, len(self._available_dates)))
             self._active_date = self._available_dates[idx]
         self._active_index = self._date_groups[self._active_date]
 
@@ -105,11 +121,18 @@ class TradingEnvironment(gym.Env):
         self.entry_step = None
         self.entry_price = None
         self.portfolio_value = self.initial_cash
+        self.peak_portfolio_value = self.initial_cash
         self.trade_history = []
         return self._get_observation(), {
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
+            "date": str(self._active_date),
         }
+
+    @property
+    def available_dates(self) -> tuple:
+        """Trading dates available for deterministic full-split evaluation."""
+        return tuple(self._available_dates)
 
     def _row_at(self, local_step: int) -> pd.Series:
         """Map a local (within-day) step to the global market row."""
@@ -126,6 +149,8 @@ class TradingEnvironment(gym.Env):
         forced_clear = False
 
         previous_value = self.portfolio_value
+        previous_peak_value = self.peak_portfolio_value
+        previous_market_price = float(self._row_at(self.current_step)[self.price_col])
         if is_last:
             # 마감 강제청산: agent action(Add/Hold)을 무시하고 무조건 Clear한다.
             # 보유분이 없으면 Clear는 no-op이라 안전하며, 새 진입도 막힌다.
@@ -137,11 +162,17 @@ class TradingEnvironment(gym.Env):
         if not is_last:
             self.current_step += 1
         self.portfolio_value = self._calculate_portfolio_value()
-        reward = self._calculate_reward(
+        current_market_price = float(self._row_at(self.current_step)[self.price_col])
+        reward_terms = self._calculate_reward(
             previous_value=previous_value,
             current_value=self.portfolio_value,
-            friction_cost=execution.friction_cost,
+            previous_peak_value=previous_peak_value,
+            previous_market_price=previous_market_price,
+            current_market_price=current_market_price,
+            trade_value=execution.trade_value,
         )
+        self.peak_portfolio_value = max(previous_peak_value, self.portfolio_value)
+        reward = reward_terms.reward
 
         terminated = is_last
         truncated = False
@@ -149,7 +180,16 @@ class TradingEnvironment(gym.Env):
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
             "friction_cost": execution.friction_cost,
+            "trade_value": execution.trade_value,
             "forced_clear": forced_clear,
+            "portfolio_return": reward_terms.portfolio_return,
+            "base_return": reward_terms.base_return,
+            "benchmark_return": reward_terms.benchmark_return,
+            "benchmark_relative_reward": reward_terms.benchmark_relative_reward,
+            "inventory_penalty": reward_terms.inventory_penalty,
+            "turnover_penalty": reward_terms.turnover_penalty,
+            "drawdown_penalty": reward_terms.drawdown_penalty,
+            "downside_penalty": reward_terms.downside_penalty,
         }
         return self._get_observation(), reward, terminated, truncated, info
 
@@ -182,18 +222,28 @@ class TradingEnvironment(gym.Env):
         self,
         previous_value: float,
         current_value: float,
-        friction_cost: float,
-    ) -> float:
+        previous_peak_value: float,
+        previous_market_price: float,
+        current_market_price: float,
+        trade_value: float,
+    ) -> RewardTerms:
         """Calculate reward as cost-deducted realized return minus risk penalty.
 
         거래비용은 _execute_trade에서 이미 cash(→ portfolio_value)에 차감되므로
         portfolio_return 자체가 비용 반영 후 수익률이다. friction을 reward에서
         다시 빼면 이중 차감이 되므로 friction_cost는 별도 패널티로 쓰지 않는다.
         """
-        # TODO: Add drawdown penalty, inventory penalty, and risk-adjusted rewards.
-        portfolio_return = (current_value - previous_value) / max(previous_value, 1e-9)
-        risk_penalty = self.units_held * self.risk_penalty_rate
-        return float(portfolio_return - risk_penalty)
+        return calculate_reward_terms(
+            previous_value=previous_value,
+            current_value=current_value,
+            previous_peak_value=previous_peak_value,
+            previous_market_price=previous_market_price,
+            current_market_price=current_market_price,
+            units_held=self.units_held,
+            max_units=self.max_units,
+            trade_value=trade_value,
+            config=self.reward_config,
+        )
 
     def _execute_trade(self, action: int) -> TradeExecution:
         """Execute a Unit-scaling trade at the current real Close.
