@@ -48,7 +48,7 @@ class RLAgent:
 
     def save(self, path: str | Path) -> None:
         """Save the underlying model."""
-        # TODO: Save feature schema and config alongside model weights.
+        # 서빙용 저장은 models.artifact.save_artifact 사용 (schema/metadata 포함).
         if self.model is None:
             raise RuntimeError("No model is available to save.")
         self.model.save(path)
