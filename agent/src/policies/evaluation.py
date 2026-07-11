@@ -144,6 +144,7 @@ def build_backtest_environment(featured_data: Any, config: dict[str, Any]) -> Tr
         episode_days=episode_days,
         duration_horizon_bars=episode_days * nominal_bars,
         nominal_bars_per_day=nominal_bars,
+        feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
     )
 
 

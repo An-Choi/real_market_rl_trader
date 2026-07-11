@@ -170,6 +170,7 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
         episode_days=20,
         duration_horizon_bars=1280,
         nominal_bars_per_day=64,
+        feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
     )
     agent = RLAgent(model_kwargs={
         "seed": 0,

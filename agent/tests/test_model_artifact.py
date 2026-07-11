@@ -460,6 +460,7 @@ def test_load_artifact_v2_rejects_mismatched_env_semantics(
         initial_cash = 10_000.0
         feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
         nominal_bars_per_day = 64
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
 
     with pytest.raises(ArtifactError, match="duration_horizon_bars"):
         load_artifact(artifact_dir, env=MismatchedEnv())
@@ -493,6 +494,7 @@ def test_load_artifact_v2_rejects_mismatched_feature_columns(
         duration_horizon_bars = 1280
         nominal_bars_per_day = 64
         feature_columns = mismatched_columns
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
 
     with pytest.raises(ArtifactError, match="feature_columns"):
         load_artifact(artifact_dir, env=MismatchedFeaturesEnv())
@@ -511,6 +513,53 @@ def test_load_artifact_v2_rejects_env_without_feature_columns(
         episode_days = 20
         duration_horizon_bars = 1280
         nominal_bars_per_day = 64
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
 
     with pytest.raises(ArtifactError, match="feature_columns"):
         load_artifact(artifact_dir, env=NoFeatureColumnsEnv())
+
+
+def test_load_artifact_v2_rejects_mismatched_feature_schema_version(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """feature_columns 이름/순서가 같아도 계산식이 바뀐 schema(version 999)면 거부해야 한다."""
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()
+    data["feature_schema_version"] = 999
+    artifact_dir = tmp_path / "v2-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+
+    class SchemaMismatchEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
+
+    with pytest.raises(ArtifactError, match="feature_schema_version"):
+        load_artifact(artifact_dir, env=SchemaMismatchEnv())
+
+
+def test_load_artifact_v2_rejects_env_without_feature_schema_version(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """env가 feature_schema_version을 노출하지 않으면 검증 불가 → 거부(fail-closed)."""
+    artifact_dir = _matching_v2_artifact(tmp_path, valid_metadata_dict)
+
+    class NoSchemaVersionEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+
+    with pytest.raises(ArtifactError, match="feature_schema_version"):
+        load_artifact(artifact_dir, env=NoSchemaVersionEnv())

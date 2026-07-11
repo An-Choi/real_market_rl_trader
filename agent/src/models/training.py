@@ -56,6 +56,7 @@ def build_training_environment(
         episode_days=episode_days,
         duration_horizon_bars=episode_days * nominal_bars,
         nominal_bars_per_day=nominal_bars,
+        feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
     )
 
 

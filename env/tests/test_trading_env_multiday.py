@@ -40,6 +40,22 @@ def test_episode_days_must_be_positive_int() -> None:
         make_env(data, episode_days=-1)
 
 
+def test_feature_schema_version_stored_and_validated() -> None:
+    data = _days(2)
+    env = make_env(data, feature_schema_version=3)
+    assert env.feature_schema_version == 3
+
+    env_default = make_env(data)
+    assert env_default.feature_schema_version is None
+
+    with pytest.raises(ValueError):
+        make_env(data, feature_schema_version=0)
+    with pytest.raises(ValueError):
+        make_env(data, feature_schema_version=-1)
+    with pytest.raises(ValueError):
+        make_env(data, feature_schema_version=True)
+
+
 def test_reset_selects_consecutive_days() -> None:
     env = make_env(_days(5), episode_days=3)
     _, info = env.reset(seed=0)

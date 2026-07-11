@@ -52,12 +52,23 @@ class TradingEnvironment(gym.Env):
         episode_days: int = 1,
         duration_horizon_bars: int | None = None,
         nominal_bars_per_day: int = 64,
+        feature_schema_version: int | None = None,
     ) -> None:
         """Real-OHLCV intraday Unit-scaling environment.
 
         Discrete actions: 0=Hold, 1=Add 1 Unit, 2=Clear.
+        feature_schema_version: feature 계산 파이프라인의 schema version 선언 — artifact 호환성 검증용.
         """
         super().__init__()
+        if feature_schema_version is not None and (
+            isinstance(feature_schema_version, bool)
+            or not isinstance(feature_schema_version, int)
+            or feature_schema_version <= 0
+        ):
+            raise ValueError(
+                f"feature_schema_version must be a positive int or None: {feature_schema_version!r}"
+            )
+        self.feature_schema_version = feature_schema_version
         self.market_data = market_data.reset_index(drop=True)
         ts = pd.to_datetime(self.market_data["Timestamp"])
         self._date_groups = {

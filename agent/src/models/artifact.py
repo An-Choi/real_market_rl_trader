@@ -261,6 +261,19 @@ def _check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
     if env is None:
         return
     target = getattr(env, "unwrapped", env)
+
+    env_schema_version = getattr(target, "feature_schema_version", None)
+    if env_schema_version is None:
+        raise ArtifactError(
+            "env does not declare 'feature_schema_version'; cannot verify observation semantics"
+        )
+    if int(env_schema_version) != int(meta.feature_schema_version):
+        raise ArtifactError(
+            f"env feature_schema_version={env_schema_version!r} != artifact "
+            f"feature_schema_version={meta.feature_schema_version!r}; "
+            "feature 계산식이 다른 schema — observation semantics would silently differ"
+        )
+
     for key in SEMANTIC_ENV_PARAMS:
         env_value = getattr(target, key, None)
         if env_value is None:
