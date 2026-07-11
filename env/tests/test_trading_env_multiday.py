@@ -92,6 +92,13 @@ def test_reset_episode_days_override_validation() -> None:
     assert info["episode_days"] == 2
 
 
+def test_random_reset_clamps_when_data_shorter_than_episode_days() -> None:
+    env = make_env(_days(2), episode_days=5)
+    _, info = env.reset(seed=0)
+    assert info["episode_days"] == 2
+    assert list(env._episode_dates) == env._available_dates
+
+
 def test_window_needs_at_least_two_bars() -> None:
     env = make_env(_days(1, bars_per_day=1))
     with pytest.raises(ValueError):

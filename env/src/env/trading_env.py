@@ -137,6 +137,7 @@ class TradingEnvironment(gym.Env):
             # 명시 지정은 남은 일수로 truncate 수용
             effective_days = min(episode_days, n_dates - start_idx)
         else:
+            # 데이터가 episode_days보다 짧으면 가용 전체로 truncate (짧은 fixture 허용)
             effective_days = min(episode_days, n_dates)
             last_start = n_dates - effective_days
             start_idx = int(self.np_random.integers(0, last_start + 1))

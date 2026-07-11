@@ -152,6 +152,20 @@ def test_partial_last_day_uses_same_formula() -> None:
     assert daily["r_settlement"].iloc[1] == pytest.approx(10200.0 / 10250.0 - 1)
 
 
+def test_cumulative_decomposition_exposed_in_summary() -> None:
+    results = _two_day_results()
+    metrics = summarize_backtest(
+        results, initial_value=10000.0, terminal_liquidation_cost=100.0
+    )
+    product = (
+        (1 + metrics["cum_transition_return"])
+        * (1 + metrics["cum_intraday_return"])
+        * (1 + metrics["cum_settlement_return"])
+    )
+    assert product == pytest.approx(1 + metrics["total_return"])
+    assert metrics["cum_transition_return"] == pytest.approx(10300.0 / 10100.0 - 1)
+
+
 def test_empty_results() -> None:
     metrics = summarize_backtest(pd.DataFrame(), initial_value=10000.0)
     assert metrics["total_return"] == 0.0

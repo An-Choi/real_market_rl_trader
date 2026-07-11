@@ -89,6 +89,9 @@ _EMPTY_SUMMARY = {
     "hold_action_rate": 0.0,
     "add_action_rate": 0.0,
     "clear_action_rate": 0.0,
+    "cum_transition_return": 0.0,
+    "cum_intraday_return": 0.0,
+    "cum_settlement_return": 0.0,
 }
 
 
@@ -135,6 +138,9 @@ def summarize_backtest(
         else 0.0
     )
     action_rates = results["action"].value_counts(normalize=True)
+    cum_transition_return = float((1 + daily["r_transition"]).prod() - 1)
+    cum_intraday_return = float((1 + daily["r_intraday"]).prod() - 1)
+    cum_settlement_return = float((1 + daily["r_settlement"]).prod() - 1)
     return {
         "total_return": total_return,
         "final_portfolio_value": float(initial_value) * (1.0 + total_return),
@@ -152,4 +158,7 @@ def summarize_backtest(
         "hold_action_rate": float(action_rates.get(0, 0.0)),
         "add_action_rate": float(action_rates.get(1, 0.0)),
         "clear_action_rate": float(action_rates.get(2, 0.0)),
+        "cum_transition_return": cum_transition_return,
+        "cum_intraday_return": cum_intraday_return,
+        "cum_settlement_return": cum_settlement_return,
     }
