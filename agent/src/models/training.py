@@ -55,6 +55,7 @@ def build_training_environment(
         reward_return_mode=environment_config.get("reward_return_mode", "simple_return"),
         episode_days=episode_days,
         duration_horizon_bars=episode_days * nominal_bars,
+        nominal_bars_per_day=nominal_bars,
     )
 
 
@@ -111,6 +112,7 @@ def train_ppo_artifact(
             "initial_cash": config["environment"]["initial_cash"],
             "episode_days": raw_environment.episode_days,
             "duration_horizon_bars": raw_environment.duration_horizon_bars,
+            "nominal_bars_per_day": raw_environment.nominal_bars_per_day,
         },
         normalization=(
             {"type": "feature_standardization", "file": "feature_normalization.json"}

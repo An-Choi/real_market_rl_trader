@@ -51,6 +51,7 @@ class TradingEnvironment(gym.Env):
         reward_return_mode: str = "simple_return",
         episode_days: int = 1,
         duration_horizon_bars: int | None = None,
+        nominal_bars_per_day: int = 64,
     ) -> None:
         """Real-OHLCV intraday Unit-scaling environment.
 
@@ -67,8 +68,17 @@ class TradingEnvironment(gym.Env):
         if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
             raise ValueError(f"episode_days must be a positive int: {episode_days!r}")
         self.episode_days = episode_days
+        if (
+            isinstance(nominal_bars_per_day, bool)
+            or not isinstance(nominal_bars_per_day, int)
+            or nominal_bars_per_day <= 0
+        ):
+            raise ValueError(
+                f"nominal_bars_per_day must be a positive int: {nominal_bars_per_day!r}"
+            )
+        self.nominal_bars_per_day = nominal_bars_per_day
         if duration_horizon_bars is None:
-            duration_horizon_bars = episode_days * 64  # nominal 64 bars/day
+            duration_horizon_bars = episode_days * self.nominal_bars_per_day
         if (
             isinstance(duration_horizon_bars, bool)
             or not isinstance(duration_horizon_bars, int)
@@ -248,7 +258,9 @@ class TradingEnvironment(gym.Env):
 
         holding_duration_norm은 고정 horizon(duration_horizon_bars) 기준 —
         runtime episode 길이와 무관해 학습/평가/서빙에서 동일 스케일(causal).
-        tod_frac은 당일 기준.
+        tod_frac은 당일 기준, 분모는 그날 실제 bar 수가 아닌 고정 상수
+        nominal_bars_per_day — 당일 뒤쪽 bar 결손 여부(미래 정보)에 의존하지
+        않는다(causal).
         """
         row = self._row_at(self.current_step)
         features = (
@@ -272,11 +284,9 @@ class TradingEnvironment(gym.Env):
             np.searchsorted(self._day_start_offsets, self.current_step, side="right")
         ) - 1
         day_start = int(self._day_start_offsets[day_idx])
-        if day_idx + 1 < len(self._day_start_offsets):
-            day_end = int(self._day_start_offsets[day_idx + 1])
-        else:
-            day_end = len(self._active_index)
-        tod_frac = (self.current_step - day_start) / max(day_end - day_start - 1, 1)
+        tod_frac = min(
+            (self.current_step - day_start) / max(self.nominal_bars_per_day - 1, 1), 1.0
+        )
 
         portfolio_state = np.array(
             [units_held_frac, unrealized_pnl_norm, holding_duration_norm, tod_frac],

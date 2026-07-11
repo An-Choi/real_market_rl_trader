@@ -381,6 +381,7 @@ def _v2_env_params() -> dict:
         "initial_cash": 10_000.0,
         "episode_days": 20,
         "duration_horizon_bars": 1280,
+        "nominal_bars_per_day": 64,
     }
 
 
@@ -457,6 +458,59 @@ def test_load_artifact_v2_rejects_mismatched_env_semantics(
         unit_fraction = 0.2
         max_units = 5
         initial_cash = 10_000.0
+        feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+        nominal_bars_per_day = 64
 
     with pytest.raises(ArtifactError, match="duration_horizon_bars"):
         load_artifact(artifact_dir, env=MismatchedEnv())
+
+
+def _matching_v2_artifact(tmp_path, valid_metadata_dict) -> Path:
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()
+    artifact_dir = tmp_path / "v2-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+    return artifact_dir
+
+
+def test_load_artifact_v2_rejects_mismatched_feature_columns(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """feature_columns 이름/순서가 다르면 차원(개수)이 같아도 거부해야 한다 —
+    observation semantics가 조용히 달라지는 것을 막는 fail-closed 계약."""
+    artifact_dir = _matching_v2_artifact(tmp_path, valid_metadata_dict)
+    mismatched_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+    mismatched_columns[0], mismatched_columns[1] = mismatched_columns[1], mismatched_columns[0]
+
+    class MismatchedFeaturesEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_columns = mismatched_columns
+
+    with pytest.raises(ArtifactError, match="feature_columns"):
+        load_artifact(artifact_dir, env=MismatchedFeaturesEnv())
+
+
+def test_load_artifact_v2_rejects_env_without_feature_columns(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """env가 feature_columns를 노출하지 않으면 검증 불가 → 거부(fail-closed)."""
+    artifact_dir = _matching_v2_artifact(tmp_path, valid_metadata_dict)
+
+    class NoFeatureColumnsEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+
+    with pytest.raises(ArtifactError, match="feature_columns"):
+        load_artifact(artifact_dir, env=NoFeatureColumnsEnv())

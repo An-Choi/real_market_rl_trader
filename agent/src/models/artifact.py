@@ -27,11 +27,12 @@ REQUIRED_ENV_PARAMS_BY_VERSION = {
         "initial_cash",
         "episode_days",
         "duration_horizon_bars",
+        "nominal_bars_per_day",
     ),
 }
 # v1 alias — 기존 테스트/외부 참조 호환
 REQUIRED_ENV_PARAMS = REQUIRED_ENV_PARAMS_BY_VERSION[1]
-POSITIVE_INT_ENV_PARAMS = ("episode_days", "duration_horizon_bars")
+POSITIVE_INT_ENV_PARAMS = ("episode_days", "duration_horizon_bars", "nominal_bars_per_day")
 LEGACY_SEMANTICS_MAX_VERSION = 1  # v1 = 당일 기준 holding_duration_norm으로 학습됨
 METADATA_FILENAME = "metadata.json"
 MODEL_FILENAME = "model.zip"
@@ -247,6 +248,7 @@ SEMANTIC_ENV_PARAMS = (
     "unit_fraction",
     "max_units",
     "initial_cash",
+    "nominal_bars_per_day",
 )
 
 
@@ -271,6 +273,34 @@ def _check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
                 f"env {key}={env_value!r} != artifact env_params {key}={meta_value!r}; "
                 "observation semantics would silently differ"
             )
+
+    env_feature_columns = getattr(target, "feature_columns", None)
+    if env_feature_columns is None:
+        raise ArtifactError(
+            "env does not expose 'feature_columns'; cannot verify observation semantics"
+        )
+    if list(env_feature_columns) != list(meta.feature_columns):
+        raise ArtifactError(
+            f"env feature_columns {list(env_feature_columns)!r} != artifact "
+            f"feature_columns {meta.feature_columns!r}; observation semantics would silently differ"
+        )
+    if meta.portfolio_state_fields != DEFAULT_PORTFOLIO_STATE_FIELDS:
+        raise ArtifactError(
+            f"artifact portfolio_state_fields {meta.portfolio_state_fields!r} != "
+            f"environment layout {DEFAULT_PORTFOLIO_STATE_FIELDS!r}"
+        )
+    observation_space = getattr(target, "observation_space", None)
+    if observation_space is not None and observation_space.shape[0] != meta.observation_dim:
+        raise ArtifactError(
+            f"env observation dim {observation_space.shape[0]} != "
+            f"artifact observation_dim {meta.observation_dim}"
+        )
+    action_space = getattr(target, "action_space", None)
+    if action_space is not None and getattr(action_space, "n", None) != meta.action_space.get("n"):
+        raise ArtifactError(
+            f"env action space n={getattr(action_space, 'n', None)!r} != "
+            f"artifact action_space n={meta.action_space.get('n')!r}"
+        )
 
 
 def load_artifact(

@@ -169,6 +169,7 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
         friction_model=FrictionModel(),
         episode_days=20,
         duration_horizon_bars=1280,
+        nominal_bars_per_day=64,
     )
     agent = RLAgent(model_kwargs={
         "seed": 0,
@@ -190,6 +191,7 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
             "initial_cash": env.initial_cash,
             "episode_days": env.episode_days,
             "duration_horizon_bars": env.duration_horizon_bars,
+            "nominal_bars_per_day": env.nominal_bars_per_day,
         },
     )
     artifact_dir = save_artifact(agent, metadata, tmp_path / "artifacts")

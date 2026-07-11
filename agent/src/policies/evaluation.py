@@ -143,6 +143,7 @@ def build_backtest_environment(featured_data: Any, config: dict[str, Any]) -> Tr
         reward_return_mode=environment_config.get("reward_return_mode", "simple_return"),
         episode_days=episode_days,
         duration_horizon_bars=episode_days * nominal_bars,
+        nominal_bars_per_day=nominal_bars,
     )
 
 

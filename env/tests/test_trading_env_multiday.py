@@ -223,7 +223,7 @@ def test_holding_duration_independent_of_runtime_episode_length() -> None:
 
 
 def test_tod_frac_resets_each_day() -> None:
-    env = make_env(_days(2, bars_per_day=3), episode_days=2)
+    env = make_env(_days(2, bars_per_day=3), episode_days=2, nominal_bars_per_day=3)
     env.reset(seed=0)
     tods = []
     done = False
@@ -233,3 +233,41 @@ def test_tod_frac_resets_each_day() -> None:
         done = terminated or truncated
     # valuation bar 기준: day1 bar1→0.5, bar2→1.0, day2 bar0→0.0, bar1→0.5, bar2→1.0
     assert tods == pytest.approx([0.5, 1.0, 0.0, 0.5, 1.0])
+
+
+def test_tod_frac_independent_of_actual_day_length() -> None:
+    """tod_frac은 nominal_bars_per_day(고정 상수)만 분모로 써야 한다 — 그날 실제
+    bar 수(미래 정보, 결손 시 달라짐)에 의존하면 causal 계약 위반이다.
+
+    같은 day1 앞 2개 bar가 동일한 두 데이터셋(하나는 day1이 3-bar, 하나는
+    day1의 마지막 bar가 결손돼 2-bar)에서 첫 step의 tod_frac(obs[-1])이
+    같아야 한다 — 그날 뒤쪽 bar 존재 여부가 앞선 step의 관측을 바꾸면 안 된다.
+    """
+    full_data = _days(2, bars_per_day=3)
+    # day1의 마지막 bar(index 2)를 제거해 day1을 2-bar로 결손시킨다.
+    truncated_data = full_data.drop(index=2).reset_index(drop=True)
+
+    env_full = make_env(full_data, episode_days=2, nominal_bars_per_day=3)
+    env_truncated = make_env(truncated_data, episode_days=2, nominal_bars_per_day=3)
+
+    obs_full, _ = env_full.reset(seed=0, options={"start_date": "2025-06-02"})
+    obs_truncated, _ = env_truncated.reset(seed=0, options={"start_date": "2025-06-02"})
+    assert obs_full[-1] == obs_truncated[-1]
+
+    obs_full, *_ = env_full.step(0)
+    obs_truncated, *_ = env_truncated.step(0)
+    assert float(obs_full[-1]) == pytest.approx(float(obs_truncated[-1]))
+
+
+def test_tod_frac_clips_at_one_for_days_longer_than_nominal() -> None:
+    """nominal_bars_per_day보다 실제로 긴 날에는 tod_frac이 1.0에서 clip된다."""
+    env = make_env(_days(1, bars_per_day=5), episode_days=1, nominal_bars_per_day=3)
+    env.reset(seed=0)
+    tods = []
+    done = False
+    while not done:
+        obs, _, terminated, truncated, _ = env.step(0)
+        tods.append(float(obs[-1]))
+        done = terminated or truncated
+    # nominal=3 → 분모 max(3-1,1)=2. step 1..4 valuation bar는 1,2,3,4 → frac 0.5,1.0,1.5→clip,2.0→clip
+    assert tods == pytest.approx([0.5, 1.0, 1.0, 1.0])
