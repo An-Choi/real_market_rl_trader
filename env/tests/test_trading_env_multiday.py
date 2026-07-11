@@ -180,3 +180,49 @@ def test_estimate_liquidation_cost() -> None:
         trade_value=info["held_market_value"], side="sell", liquidity_score=None,
     )
     assert env.estimate_liquidation_cost() == pytest.approx(expected)
+
+
+def test_duration_horizon_bars_validation_and_default() -> None:
+    data = _days(2)
+    with pytest.raises(ValueError):
+        make_env(data, episode_days=2, duration_horizon_bars=0)
+    env = make_env(data, episode_days=2)
+    assert env.duration_horizon_bars == 2 * 64  # 기본값 = episode_days * 64
+
+
+def test_holding_duration_uses_fixed_horizon_and_clips() -> None:
+    # fixture feature가 1개라 obs는 5차원 — portfolio state는 음수 인덱스로 참조
+    # (obs[-2] = holding_duration_norm, obs[-1] = tod_frac)
+    env = make_env(_days(2, bars_per_day=3), episode_days=2, duration_horizon_bars=2)
+    obs, _ = env.reset(seed=0)
+    assert obs[-2] == 0.0  # flat
+    obs, *_ = env.step(1)   # entry_step=0 → 경과 1 bar
+    assert obs[-2] == pytest.approx(1 / 2)
+    obs, *_ = env.step(0)   # 경과 2 bars
+    assert obs[-2] == pytest.approx(1.0)
+    obs, *_ = env.step(0)   # 경과 3 bars → clip at 1.0 (날짜 경계를 넘어도 연속)
+    assert obs[-2] == pytest.approx(1.0)
+
+
+def test_holding_duration_independent_of_runtime_episode_length() -> None:
+    # 같은 horizon이면 episode 길이가 달라도 같은 경과 bar에서 같은 값
+    env_short = make_env(_days(2, bars_per_day=3), episode_days=1, duration_horizon_bars=10)
+    env_long = make_env(_days(2, bars_per_day=3), episode_days=2, duration_horizon_bars=10)
+    obs_s = env_short.reset(seed=0, options={"start_date": "2025-06-02"})[0]
+    obs_l = env_long.reset(seed=0, options={"start_date": "2025-06-02"})[0]
+    obs_s, *_ = env_short.step(1)
+    obs_l, *_ = env_long.step(1)
+    assert obs_s[-2] == obs_l[-2] == pytest.approx(1 / 10)
+
+
+def test_tod_frac_resets_each_day() -> None:
+    env = make_env(_days(2, bars_per_day=3), episode_days=2)
+    env.reset(seed=0)
+    tods = []
+    done = False
+    while not done:
+        obs, _, terminated, truncated, _ = env.step(0)
+        tods.append(float(obs[-1]))
+        done = terminated or truncated
+    # valuation bar 기준: day1 bar1→0.5, bar2→1.0, day2 bar0→0.0, bar1→0.5, bar2→1.0
+    assert tods == pytest.approx([0.5, 1.0, 0.0, 0.5, 1.0])

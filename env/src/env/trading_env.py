@@ -50,6 +50,7 @@ class TradingEnvironment(gym.Env):
         reward_scale: float = 1.0,
         reward_return_mode: str = "simple_return",
         episode_days: int = 1,
+        duration_horizon_bars: int | None = None,
     ) -> None:
         """Real-OHLCV intraday Unit-scaling environment.
 
@@ -66,6 +67,17 @@ class TradingEnvironment(gym.Env):
         if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
             raise ValueError(f"episode_days must be a positive int: {episode_days!r}")
         self.episode_days = episode_days
+        if duration_horizon_bars is None:
+            duration_horizon_bars = episode_days * 64  # nominal 64 bars/day
+        if (
+            isinstance(duration_horizon_bars, bool)
+            or not isinstance(duration_horizon_bars, int)
+            or duration_horizon_bars <= 0
+        ):
+            raise ValueError(
+                f"duration_horizon_bars must be a positive int: {duration_horizon_bars!r}"
+            )
+        self.duration_horizon_bars = duration_horizon_bars
         self._active_date = None
         self._episode_dates: list = []
         self._day_start_offsets: np.ndarray | None = None
@@ -231,7 +243,12 @@ class TradingEnvironment(gym.Env):
         )
 
     def _get_observation(self) -> np.ndarray:
-        """Observation = features + Unit portfolio state (4)."""
+        """Observation = features + Unit portfolio state (4).
+
+        holding_duration_norm은 고정 horizon(duration_horizon_bars) 기준 —
+        runtime episode 길이와 무관해 학습/평가/서빙에서 동일 스케일(causal).
+        tod_frac은 당일 기준.
+        """
         row = self._row_at(self.current_step)
         features = (
             pd.to_numeric(row[self.feature_columns], errors="coerce")
@@ -239,16 +256,27 @@ class TradingEnvironment(gym.Env):
             .to_numpy(dtype=np.float32)
         )
         price = float(row[self.price_col])
-        n = len(self._active_index)
         units_held_frac = self.units_held / max(self.max_units, 1)
         held_value = self._held_market_value(price)
         cost_basis = self.units_held * self.initial_cash * self.unit_fraction
         unrealized_pnl_norm = (held_value - cost_basis) / max(self.initial_cash, 1e-9)
         if self.units_held > 0 and self.entry_step is not None:
-            holding_duration_norm = (self.current_step - self.entry_step) / max(n - 1, 1)
+            holding_duration_norm = min(
+                (self.current_step - self.entry_step) / self.duration_horizon_bars, 1.0
+            )
         else:
             holding_duration_norm = 0.0
-        tod_frac = self.current_step / max(n - 1, 1)
+
+        day_idx = int(
+            np.searchsorted(self._day_start_offsets, self.current_step, side="right")
+        ) - 1
+        day_start = int(self._day_start_offsets[day_idx])
+        if day_idx + 1 < len(self._day_start_offsets):
+            day_end = int(self._day_start_offsets[day_idx + 1])
+        else:
+            day_end = len(self._active_index)
+        tod_frac = (self.current_step - day_start) / max(day_end - day_start - 1, 1)
+
         portfolio_state = np.array(
             [units_held_frac, unrealized_pnl_norm, holding_duration_norm, tod_frac],
             dtype=np.float32,
