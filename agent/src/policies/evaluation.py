@@ -17,8 +17,10 @@ from policies.baseline_agents import SUPPORTED_BASELINES, make_baseline_agent
 
 
 BACKTEST_INFO_KEYS = (
+    "valuation_timestamp",
+    "valuation_price",
+    "held_market_value",
     "trade_value",
-    "forced_clear",
     "portfolio_return",
     "base_return",
     "benchmark_return",
@@ -44,69 +46,64 @@ BACKTEST_INFO_KEYS = (
 
 @dataclass
 class BacktestEngine:
-    """Run an agent through a trading environment and collect results."""
+    """Run an agent through the whole split as one continuous episode."""
 
     agent: Any
     environment: Any
     results: list[dict] = field(default_factory=list)
+    reset_info: dict = field(default_factory=dict)
+    terminal_liquidation_cost: float = 0.0
 
     def run(
         self,
         max_steps: int | None = None,
         seed: int | None = None,
-        dates: list[Any] | tuple[Any, ...] | None = None,
     ) -> pd.DataFrame:
-        """Execute every trading day in the supplied evaluation split."""
-        evaluation_dates = dates
-        if evaluation_dates is None:
-            evaluation_dates = getattr(self.environment, "available_dates", (None,))
+        """Split 전체(available_dates)를 단일 연속 episode로 실행한다.
+
+        환경 경로는 seed와 무관하다(시작일·윈도우가 데이터로 고정).
+        stochastic policy의 action 경로만 agent seed에 의존한다.
+        """
+        env = self.environment
+        dates = env.available_dates
+        if hasattr(self.agent, "reset"):
+            self.agent.reset()
+        observation, self.reset_info = env.reset(
+            seed=seed,
+            options={"start_date": dates[0], "episode_days": len(dates)},
+        )
         self.results = []
+        self.terminal_liquidation_cost = 0.0
 
-        global_step = 0
-        for episode_index, episode_date in enumerate(evaluation_dates):
-            if hasattr(self.agent, "reset"):
-                self.agent.reset()
-            reset_options = None if episode_date is None else {"date": episode_date}
-            episode_seed = None if seed is None else seed + episode_index
-            observation, reset_info = self.environment.reset(
-                seed=episode_seed,
-                options=reset_options,
-            )
-            done = False
-            episode_step = 0
+        step_count = 0
+        done = False
+        while not done:
+            market_row = env.get_current_market_row()
+            timestamp = market_row.get("Timestamp")
+            action = self._predict_action(observation, market_row=market_row)
+            observation, reward, terminated, truncated, info = env.step(action)
 
-            while not done:
-                market_row = self.environment.get_current_market_row()
-                timestamp = market_row.get("Timestamp")
-                action = self._predict_action(observation, market_row=market_row)
-                observation, reward, terminated, truncated, info = self.environment.step(action)
+            result_row = {
+                "step": step_count,
+                "timestamp": timestamp,
+                "action": action,
+                "reward": reward,
+                "portfolio_value": info["portfolio_value"],
+                "units_held": info["units_held"],
+                "friction_cost": info["friction_cost"],
+            }
+            for key in BACKTEST_INFO_KEYS:
+                if key in info:
+                    result_row[key] = info[key]
+            self.results.append(result_row)
 
-                result_row = {
-                    "step": global_step,
-                    "episode_step": episode_step,
-                    "episode": episode_index,
-                    "episode_date": str(episode_date),
-                    "timestamp": timestamp,
-                    "initial_portfolio_value": reset_info.get(
-                        "portfolio_value", self.environment.initial_cash
-                    ),
-                    "action": action,
-                    "reward": reward,
-                    "portfolio_value": info["portfolio_value"],
-                    "units_held": info["units_held"],
-                    "friction_cost": info["friction_cost"],
-                }
-                for key in BACKTEST_INFO_KEYS:
-                    if key in info:
-                        result_row[key] = info[key]
-                self.results.append(result_row)
+            step_count += 1
+            done = terminated or truncated
+            if max_steps is not None and step_count >= max_steps:
+                break
 
-                global_step += 1
-                episode_step += 1
-                done = terminated or truncated
-                if max_steps is not None and episode_step >= max_steps:
-                    break
-
+        # 미청산 종료 정산 — metrics 전용, reward에는 미반영 (spec §5.3)
+        self.terminal_liquidation_cost = env.estimate_liquidation_cost()
         return self.collect_results()
 
     def collect_results(self) -> pd.DataFrame:
@@ -157,7 +154,17 @@ def run_agent_backtest(
     """Run one policy and return a compact metric summary."""
     engine = BacktestEngine(agent=agent, environment=environment)
     results = engine.run(max_steps=max_steps, seed=seed)
-    return {"agent": agent_name, "metrics": summarize_backtest(results)}
+    return {
+        "agent": agent_name,
+        "metrics": summarize_backtest(
+            results,
+            initial_value=engine.reset_info.get(
+                "portfolio_value", environment.initial_cash
+            ),
+            terminal_liquidation_cost=engine.terminal_liquidation_cost,
+            initial_market_price=engine.reset_info.get("initial_market_price"),
+        ),
+    }
 
 
 def evaluate_baseline(

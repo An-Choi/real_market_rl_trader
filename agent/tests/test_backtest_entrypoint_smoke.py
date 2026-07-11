@@ -80,7 +80,10 @@ def test_backtest_entrypoint_runs_on_synthetic_data(tmp_path: Path) -> None:
         "max_drawdown",
         "trade_count",
         "final_portfolio_value",
-        "forced_clear_count",
+        "overnight_hold_rate",
+        "open_at_end",
+        "terminal_liquidation_cost",
+        "market_return",
     }
 
 
