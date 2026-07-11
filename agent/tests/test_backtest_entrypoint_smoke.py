@@ -167,6 +167,8 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
         market_data=featured_data,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         friction_model=FrictionModel(),
+        episode_days=20,
+        duration_horizon_bars=1280,
     )
     agent = RLAgent(model_kwargs={
         "seed": 0,
@@ -186,6 +188,8 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
             "unit_fraction": env.unit_fraction,
             "max_units": env.max_units,
             "initial_cash": env.initial_cash,
+            "episode_days": env.episode_days,
+            "duration_horizon_bars": env.duration_horizon_bars,
         },
     )
     artifact_dir = save_artifact(agent, metadata, tmp_path / "artifacts")

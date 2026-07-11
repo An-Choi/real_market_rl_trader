@@ -124,22 +124,25 @@ class BacktestEngine:
 
 def build_backtest_environment(featured_data: Any, config: dict[str, Any]) -> TradingEnvironment:
     """Build the standard environment used for policy evaluation."""
+    environment_config = config["environment"]
+    episode_days = int(environment_config.get("episode_days", 1))
+    nominal_bars = int(environment_config.get("nominal_bars_per_day", 64))
     return TradingEnvironment(
         market_data=featured_data,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
-        initial_cash=config["environment"]["initial_cash"],
-        unit_fraction=config["environment"]["unit_fraction"],
-        max_units=config["environment"]["max_units"],
+        initial_cash=environment_config["initial_cash"],
+        unit_fraction=environment_config["unit_fraction"],
+        max_units=environment_config["max_units"],
         friction_model=FrictionModel(**config["friction"]),
-        risk_penalty_rate=config["environment"]["risk_penalty_rate"],
-        turnover_penalty_rate=config["environment"].get("turnover_penalty_rate", 0.0),
-        drawdown_penalty_rate=config["environment"].get("drawdown_penalty_rate", 0.0),
-        downside_penalty_rate=config["environment"].get("downside_penalty_rate", 0.0),
-        benchmark_relative_rate=config["environment"].get("benchmark_relative_rate", 0.0),
-        reward_scale=config["environment"].get("reward_scale", 1.0),
-        reward_return_mode=config["environment"].get(
-            "reward_return_mode", "simple_return"
-        ),
+        risk_penalty_rate=environment_config["risk_penalty_rate"],
+        turnover_penalty_rate=environment_config.get("turnover_penalty_rate", 0.0),
+        drawdown_penalty_rate=environment_config.get("drawdown_penalty_rate", 0.0),
+        downside_penalty_rate=environment_config.get("downside_penalty_rate", 0.0),
+        benchmark_relative_rate=environment_config.get("benchmark_relative_rate", 0.0),
+        reward_scale=environment_config.get("reward_scale", 1.0),
+        reward_return_mode=environment_config.get("reward_return_mode", "simple_return"),
+        episode_days=episode_days,
+        duration_horizon_bars=episode_days * nominal_bars,
     )
 
 

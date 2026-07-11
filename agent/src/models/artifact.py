@@ -201,7 +201,7 @@ def make_training_metadata(
     train_end = str(timestamps.max().date()) if not timestamps.empty else "unknown"
 
     return ArtifactMetadata(
-        artifact_format_version=1,
+        artifact_format_version=2,
         artifact_id=make_artifact_id(agent.model_name, feature_schema_version),
         created_at=datetime.now(timezone.utc).isoformat(),
         algo=agent.model_name,
