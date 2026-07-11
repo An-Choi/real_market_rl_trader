@@ -30,9 +30,9 @@ def test_same_seed_date_same_trajectory() -> None:
         env.reset(seed=7, options={"date": "2025-06-02"})
         out = []
         for a in actions:
-            _, r, term, _, _ = env.step(a)
+            _, r, terminated, truncated, _ = env.step(a)
             out.append(r)
-            if term:
+            if terminated or truncated:
                 break
         return out
 

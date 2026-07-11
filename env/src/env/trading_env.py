@@ -168,27 +168,21 @@ class TradingEnvironment(gym.Env):
         return self.market_data.iloc[global_idx]
 
     def step(self, action: int):
-        """Advance one step; force-clear and terminate at the day's last bar."""
+        """bar t에서 실행 → t+1로 전진해 평가·관측. 마지막 bar는 valuation 전용.
+
+        B개 bar짜리 episode는 B−1 step이며 마지막 step은 truncated=True를
+        반환한다(terminated 아님 — continuing task, SB3가 V(s)로 bootstrap).
+        강제청산·정산은 env에 없다.
+        """
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
-
-        n = len(self._active_index)
-        is_last = self.current_step >= n - 1
-        forced_clear = False
 
         previous_value = self.portfolio_value
         previous_peak_value = self.peak_portfolio_value
         previous_market_price = float(self._row_at(self.current_step)[self.price_col])
-        if is_last:
-            # 마감 강제청산: agent action(Add/Hold)을 무시하고 무조건 Clear한다.
-            # 보유분이 없으면 Clear는 no-op이라 안전하며, 새 진입도 막힌다.
-            forced_clear = self.units_held > 0
-            execution = self._execute_trade(ACTION_CLEAR)
-        else:
-            execution = self._execute_trade(action)
+        execution = self._execute_trade(action)
 
-        if not is_last:
-            self.current_step += 1
+        self.current_step += 1
         self.portfolio_value = self._calculate_portfolio_value()
         current_market_price = float(self._row_at(self.current_step)[self.price_col])
         reward_terms = self._calculate_reward(
@@ -200,16 +194,16 @@ class TradingEnvironment(gym.Env):
             trade_value=execution.trade_value,
         )
         self.peak_portfolio_value = max(previous_peak_value, self.portfolio_value)
-        reward = reward_terms.reward
 
-        terminated = is_last
-        truncated = False
+        truncated = self.current_step >= len(self._active_index) - 1
         info = {
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
             "friction_cost": execution.friction_cost,
             "trade_value": execution.trade_value,
-            "forced_clear": forced_clear,
+            "valuation_timestamp": self._row_at(self.current_step)["Timestamp"],
+            "valuation_price": current_market_price,
+            "held_market_value": self._held_market_value(current_market_price),
             "portfolio_return": reward_terms.portfolio_return,
             "base_return": reward_terms.base_return,
             "benchmark_return": reward_terms.benchmark_return,
@@ -219,7 +213,22 @@ class TradingEnvironment(gym.Env):
             "drawdown_penalty": reward_terms.drawdown_penalty,
             "downside_penalty": reward_terms.downside_penalty,
         }
-        return self._get_observation(), reward, terminated, truncated, info
+        return self._get_observation(), reward_terms.reward, False, truncated, info
+
+    def estimate_liquidation_cost(self) -> float:
+        """현재 보유분을 현재 bar에 가상 매도할 때의 friction (metrics 정산용).
+
+        실제 거래·reward에는 쓰지 않는다 — 평가 회계 전용.
+        """
+        price = float(self._row_at(self.current_step)[self.price_col])
+        held_value = self._held_market_value(price)
+        if held_value <= 0:
+            return 0.0
+        return self.friction_model.calculate_total_friction(
+            trade_value=held_value,
+            side="sell",
+            liquidity_score=self._current_liquidity_score(),
+        )
 
     def _get_observation(self) -> np.ndarray:
         """Observation = features + Unit portfolio state (4)."""
