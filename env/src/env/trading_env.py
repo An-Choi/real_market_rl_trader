@@ -49,6 +49,7 @@ class TradingEnvironment(gym.Env):
         benchmark_relative_rate: float = 0.0,
         reward_scale: float = 1.0,
         reward_return_mode: str = "simple_return",
+        episode_days: int = 1,
     ) -> None:
         """Real-OHLCV intraday Unit-scaling environment.
 
@@ -62,7 +63,12 @@ class TradingEnvironment(gym.Env):
             for d, grp in self.market_data.groupby(ts.dt.date).groups.items()
         }
         self._available_dates = sorted(self._date_groups.keys())
+        if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
+            raise ValueError(f"episode_days must be a positive int: {episode_days!r}")
+        self.episode_days = episode_days
         self._active_date = None
+        self._episode_dates: list = []
+        self._day_start_offsets: np.ndarray | None = None
         self._active_index: np.ndarray | None = None
         self.feature_columns = feature_columns
         self.price_col = price_col
@@ -101,18 +107,38 @@ class TradingEnvironment(gym.Env):
         self.trade_history: list[TradeExecution] = []
 
     def reset(self, seed: int | None = None, options: dict | None = None):
-        """Reset to the start of a single trading day."""
+        """연속 episode_days 거래일 윈도우의 시작으로 reset한다."""
         super().reset(seed=seed)
         options = options or {}
-        if "date" in options:
-            d = options["date"]
-            if isinstance(d, str):
-                d = pd.Timestamp(d).date()
-            self._active_date = d
+        episode_days = options.get("episode_days", self.episode_days)
+        if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
+            raise ValueError(f"episode_days must be a positive int: {episode_days!r}")
+
+        start = options.get("start_date", options.get("date"))
+        n_dates = len(self._available_dates)
+        if start is not None:
+            if isinstance(start, str):
+                start = pd.Timestamp(start).date()
+            if start not in self._date_groups:
+                raise ValueError(f"unknown trading date: {start}")
+            start_idx = self._available_dates.index(start)
+            # 명시 지정은 남은 일수로 truncate 수용
+            effective_days = min(episode_days, n_dates - start_idx)
         else:
-            idx = int(self.np_random.integers(0, len(self._available_dates)))
-            self._active_date = self._available_dates[idx]
-        self._active_index = self._date_groups[self._active_date]
+            effective_days = min(episode_days, n_dates)
+            last_start = n_dates - effective_days
+            start_idx = int(self.np_random.integers(0, last_start + 1))
+
+        self._episode_dates = self._available_dates[start_idx:start_idx + effective_days]
+        self._active_date = self._episode_dates[0]
+        index_parts = [self._date_groups[d] for d in self._episode_dates]
+        self._active_index = np.concatenate(index_parts)
+        lengths = [len(part) for part in index_parts]
+        self._day_start_offsets = np.cumsum([0] + lengths[:-1])
+        if len(self._active_index) < 2:
+            raise ValueError(
+                f"episode window needs at least 2 bars, got {len(self._active_index)}"
+            )
 
         self.current_step = 0
         self.cash = self.initial_cash
@@ -127,6 +153,8 @@ class TradingEnvironment(gym.Env):
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
             "date": str(self._active_date),
+            "episode_days": effective_days,
+            "initial_market_price": float(self._row_at(0)[self.price_col]),
         }
 
     @property
