@@ -563,3 +563,34 @@ def test_load_artifact_v2_rejects_env_without_feature_schema_version(
 
     with pytest.raises(ArtifactError, match="feature_schema_version"):
         load_artifact(artifact_dir, env=NoSchemaVersionEnv())
+
+
+def test_load_artifact_v2_rejects_reversed_action_labels(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """labels 순서가 뒤집히면(n은 동일) trading_env의 action 계약과 어긋난다 —
+    조용한 오거래(model action 0 != env Hold)를 막는 fail-closed 계약."""
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()
+    data["action_space"] = {"type": "discrete", "n": 3, "labels": ["clear", "add_unit", "hold"]}
+    artifact_dir = tmp_path / "v2-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+
+    class MatchingEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
+
+        class action_space:
+            n = 3
+
+    with pytest.raises(ArtifactError, match="labels"):
+        load_artifact(artifact_dir, env=MatchingEnv())
