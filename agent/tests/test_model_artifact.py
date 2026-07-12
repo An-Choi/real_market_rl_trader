@@ -594,3 +594,22 @@ def test_load_artifact_v2_rejects_reversed_action_labels(
 
     with pytest.raises(ArtifactError, match="labels"):
         load_artifact(artifact_dir, env=MatchingEnv())
+
+
+def test_load_artifact_rejects_reversed_action_labels_without_env(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """env=None로 로드해도 labels 계약은 env 속성과 무관하게 검증돼야 한다 —
+    _check_env_compatibility()는 env is None이면 즉시 return하므로 이 검사를
+    우회해선 안 된다(labels는 고정 artifact 계약이지 env 속성 비교가 아님)."""
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()
+    data["action_space"] = {"type": "discrete", "n": 3, "labels": ["clear", "add_unit", "hold"]}
+    artifact_dir = tmp_path / "v2-artifact-no-env"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ArtifactError, match="labels"):
+        load_artifact(artifact_dir)

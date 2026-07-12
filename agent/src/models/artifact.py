@@ -316,12 +316,6 @@ def _check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
             f"env action space n={getattr(action_space, 'n', None)!r} != "
             f"artifact action_space n={meta.action_space.get('n')!r}"
         )
-    meta_labels = meta.action_space.get("labels")
-    if meta_labels != EXPECTED_ACTION_LABELS:
-        raise ArtifactError(
-            f"artifact action labels {meta_labels!r} != environment contract "
-            f"{EXPECTED_ACTION_LABELS!r}; action semantics would silently differ"
-        )
 
 
 def load_artifact(
@@ -338,6 +332,12 @@ def load_artifact(
     """
     artifact_dir = Path(artifact_dir)
     meta = load_metadata(artifact_dir)
+    meta_labels = meta.action_space.get("labels")
+    if meta_labels != EXPECTED_ACTION_LABELS:
+        raise ArtifactError(
+            f"artifact action labels {meta_labels!r} != environment contract "
+            f"{EXPECTED_ACTION_LABELS!r}; action semantics would silently differ"
+        )
     if meta.artifact_format_version <= LEGACY_SEMANTICS_MAX_VERSION:
         if not allow_legacy_semantics:
             raise ArtifactError(
