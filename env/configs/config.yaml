@@ -41,6 +41,10 @@ agent:
   normalization:
     enabled: true
     clip: 5.0
+  tensorboard:
+    enabled: true
+    log_dir: runs/tensorboard
+    log_name: ppo_005930
   ppo:
     learning_rate: 0.0003
     n_steps: 2048

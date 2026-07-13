@@ -35,6 +35,17 @@ def make_env(data: pd.DataFrame) -> TradingEnvironment:
     )
 
 
+def make_multi_day_env(data: pd.DataFrame, episode_days: int) -> TradingEnvironment:
+    return TradingEnvironment(
+        market_data=data,
+        feature_columns=["ma_5"],
+        initial_cash=10_000.0,
+        unit_fraction=0.20,
+        max_units=5,
+        episode_days=episode_days,
+    )
+
+
 def test_reset_with_date_uses_only_that_day(two_day_data: pd.DataFrame) -> None:
     env = make_env(two_day_data)
     env.reset(seed=0, options={"date": "2025-06-02"})
@@ -77,3 +88,58 @@ def test_reset_without_date_is_deterministic(two_day_data: pd.DataFrame) -> None
     env.reset(seed=42)
     d2 = env._active_date
     assert d1 == d2
+
+
+def test_multi_day_episode_crosses_day_boundary(two_day_data: pd.DataFrame) -> None:
+    env = make_multi_day_env(two_day_data, episode_days=2)
+    _, reset_info = env.reset(seed=0, options={"date": "2025-06-02"})
+    timestamps = []
+    truncated = False
+    while not truncated:
+        timestamps.append(env.get_current_market_row()["Timestamp"])
+        _, _, _, truncated, _ = env.step(0)
+
+    assert len(timestamps) == 10 - 1  # B bars → B−1 steps (마지막 bar는 valuation 전용)
+    assert pd.Timestamp(timestamps[0]).date() != pd.Timestamp(timestamps[-1]).date()
+    assert reset_info["episode_days"] == 2
+    assert reset_info["end_date"] == "2025-06-03"
+
+
+def test_multi_day_episode_carries_position_overnight(two_day_data: pd.DataFrame) -> None:
+    data = two_day_data.copy()
+    second_day = pd.to_datetime(data["Timestamp"]).dt.date == pd.Timestamp("2025-06-03").date()
+    data.loc[second_day, "Close"] += 10.0
+    env = make_multi_day_env(data, episode_days=2)
+    env.reset(seed=0, options={"date": "2025-06-02"})
+    env.step(1)
+
+    for _ in range(4):
+        _, _, terminated, _, info = env.step(0)
+
+    assert terminated is False
+    assert info["units_held"] == 1
+    assert info["portfolio_value"] > env.initial_cash
+
+
+def test_multi_day_tod_fraction_resets_each_day(two_day_data: pd.DataFrame) -> None:
+    env = make_multi_day_env(two_day_data, episode_days=2)
+    observation, _ = env.reset(seed=0, options={"date": "2025-06-02"})
+    assert observation[-1] == pytest.approx(0.0)
+
+    for _ in range(5):
+        observation, _, _, _, _ = env.step(0)
+
+    assert observation[-1] == pytest.approx(0.0)
+
+
+def test_available_dates_lists_all_trading_days(two_day_data: pd.DataFrame) -> None:
+    env = make_multi_day_env(two_day_data, episode_days=2)
+    assert env.available_dates == (
+        pd.Timestamp("2025-06-02").date(),
+        pd.Timestamp("2025-06-03").date(),
+    )
+
+
+def test_episode_days_must_be_positive(two_day_data: pd.DataFrame) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        make_multi_day_env(two_day_data, episode_days=0)

@@ -77,7 +77,7 @@ class TradingEnvironment(gym.Env):
         }
         self._available_dates = sorted(self._date_groups.keys())
         if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
-            raise ValueError(f"episode_days must be a positive int: {episode_days!r}")
+            raise ValueError(f"episode_days must be a positive integer: {episode_days!r}")
         self.episode_days = episode_days
         if (
             isinstance(nominal_bars_per_day, bool)
@@ -145,7 +145,7 @@ class TradingEnvironment(gym.Env):
         options = options or {}
         episode_days = options.get("episode_days", self.episode_days)
         if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
-            raise ValueError(f"episode_days must be a positive int: {episode_days!r}")
+            raise ValueError(f"episode_days must be a positive integer: {episode_days!r}")
 
         start = options.get("start_date", options.get("date"))
         n_dates = len(self._available_dates)
@@ -187,6 +187,7 @@ class TradingEnvironment(gym.Env):
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
             "date": str(self._active_date),
+            "end_date": str(self._episode_dates[-1]),
             "episode_days": effective_days,
             "initial_market_price": float(self._row_at(0)[self.price_col]),
         }
@@ -213,12 +214,16 @@ class TradingEnvironment(gym.Env):
 
         previous_value = self.portfolio_value
         previous_peak_value = self.peak_portfolio_value
-        previous_market_price = float(self._row_at(self.current_step)[self.price_col])
+        execution_row = self._row_at(self.current_step)
+        previous_market_price = float(execution_row[self.price_col])
+        execution_timestamp = pd.Timestamp(execution_row["Timestamp"])
         execution = self._execute_trade(action)
 
         self.current_step += 1
         self.portfolio_value = self._calculate_portfolio_value()
-        current_market_price = float(self._row_at(self.current_step)[self.price_col])
+        valuation_row = self._row_at(self.current_step)
+        current_market_price = float(valuation_row[self.price_col])
+        valuation_timestamp = pd.Timestamp(valuation_row["Timestamp"])
         reward_terms = self._calculate_reward(
             previous_value=previous_value,
             current_value=self.portfolio_value,
@@ -235,12 +240,15 @@ class TradingEnvironment(gym.Env):
             "units_held": self.units_held,
             "friction_cost": execution.friction_cost,
             "trade_value": execution.trade_value,
-            "valuation_timestamp": self._row_at(self.current_step)["Timestamp"],
+            "execution_date": str(execution_timestamp.date()),
+            "valuation_date": str(valuation_timestamp.date()),
+            "valuation_timestamp": valuation_row["Timestamp"],
             "valuation_price": current_market_price,
             "held_market_value": self._held_market_value(current_market_price),
             "portfolio_return": reward_terms.portfolio_return,
             "base_return": reward_terms.base_return,
             "benchmark_return": reward_terms.benchmark_return,
+            "benchmark_simple_return": reward_terms.benchmark_simple_return,
             "benchmark_relative_reward": reward_terms.benchmark_relative_reward,
             "inventory_penalty": reward_terms.inventory_penalty,
             "turnover_penalty": reward_terms.turnover_penalty,

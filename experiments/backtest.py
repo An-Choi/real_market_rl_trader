@@ -32,6 +32,13 @@ from utils.config_loader import load_config
 from utils.logger import setup_logger
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Backtest PPO artifact or baseline")
     parser.add_argument("--symbol", type=str, default=None)
@@ -43,6 +50,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seeds", type=str, default=None,
                         help="Comma-separated seeds for robustness evaluation, e.g. 1,2,3")
     parser.add_argument("--split", choices=("all", "train", "validation", "test"), default="test")
+    parser.add_argument(
+        "--episode-days",
+        type=_positive_int,
+        default=None,
+        help="Trading days per episode; overrides environment.episode_days.",
+    )
     parser.add_argument("--force-rebuild", action="store_true")
     parser.add_argument("--raw-dir", type=Path, default=None)
     parser.add_argument("--processed-dir", type=Path, default=None)
@@ -62,6 +75,8 @@ def main() -> None:
     logger = setup_logger()
     args = parse_args()
     config = load_config(PROJECT_ROOT / "env" / "configs" / "config.yaml")
+    if args.episode_days is not None:
+        config["environment"]["episode_days"] = args.episode_days
 
     symbol = args.symbol or config["data"]["symbol"]
     seed = args.seed if args.seed is not None else config.get("seed", 42)
@@ -82,6 +97,10 @@ def main() -> None:
         force_rebuild=args.force_rebuild,
     )
     featured_data = split_by_trading_day(featured_data, split=args.split)
+    logger.info(
+        "Evaluation episode length: %d trading day(s)",
+        int(config["environment"].get("episode_days", 1)),
+    )
 
     if args.compare_baselines:
         logger.info("Backtesting baseline suite on %s (%s split)", symbol, args.split)

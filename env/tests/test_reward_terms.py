@@ -79,5 +79,8 @@ def test_log_return_reward_is_scaled_and_decomposed() -> None:
     expected_relative = (expected_base - expected_benchmark) * 0.05
     assert info["base_return"] == pytest.approx(expected_base)
     assert info["benchmark_return"] == pytest.approx(expected_benchmark)
+    assert info["benchmark_simple_return"] == pytest.approx(0.1)
+    assert info["execution_date"] == "2025-06-02"
+    assert info["valuation_date"] == "2025-06-02"
     assert info["benchmark_relative_reward"] == pytest.approx(expected_relative)
     assert reward == pytest.approx((expected_base + expected_relative) * 100.0)

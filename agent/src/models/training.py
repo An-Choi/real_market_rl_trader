@@ -12,6 +12,7 @@ from friction.friction_model import FrictionModel
 from models.artifact import make_training_metadata, save_artifact
 from models.normalization import FeatureNormalizer, NormalizedObservationEnv
 from models.rl_agent import make_rl_agent
+from models.tensorboard_callback import TradingMetricsTensorBoardCallback
 
 
 DEFAULT_PPO_KWARGS: dict[str, Any] = {
@@ -69,6 +70,7 @@ def train_ppo_artifact(
     seed: int,
     artifacts_dir: str | Path,
     model_kwargs: dict[str, Any] | None = None,
+    tensorboard_log_dir: str | Path | None = None,
 ) -> Path:
     """Train the configured PPO agent and save a versioned artifact."""
     feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
@@ -89,8 +91,24 @@ def train_ppo_artifact(
         )
         environment = NormalizedObservationEnv(raw_environment, normalizer)
 
+    tensorboard_config = config["agent"].get("tensorboard", {})
+    tensorboard_enabled = bool(tensorboard_config.get("enabled", False))
+    configured_log_dir = (
+        tensorboard_log_dir
+        or tensorboard_config.get("log_dir")
+        or "runs/tensorboard"
+    )
+    tb_log_name = str(
+        tensorboard_config.get("log_name")
+        or f"{config['agent']['rl_model_name'].lower()}_{symbol}"
+    )
+
     ppo_kwargs = dict(DEFAULT_PPO_KWARGS)
     ppo_kwargs.update(config["agent"].get("ppo", {}))
+    if tensorboard_enabled and configured_log_dir is not None:
+        log_dir = Path(configured_log_dir)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ppo_kwargs["tensorboard_log"] = str(log_dir)
     ppo_kwargs.update(model_kwargs or {})
     agent = make_rl_agent(
         model_name=config["agent"]["rl_model_name"],
@@ -99,7 +117,18 @@ def train_ppo_artifact(
         device="cpu",
         model_kwargs=ppo_kwargs,
     )
-    agent.train(environment, total_timesteps=total_timesteps)
+    metrics_callback = None
+    if tensorboard_enabled:
+        metrics_callback = TradingMetricsTensorBoardCallback(
+            initial_cash=config["environment"]["initial_cash"],
+            max_units=config["environment"]["max_units"],
+        )
+    agent.train(
+        environment,
+        total_timesteps=total_timesteps,
+        tb_log_name=tb_log_name if tensorboard_enabled else None,
+        callback=metrics_callback,
+    )
 
     metadata = make_training_metadata(
         agent=agent,
@@ -125,6 +154,11 @@ def train_ppo_artifact(
             "seed": seed,
             "ppo": ppo_kwargs,
             "normalization": normalization_config,
+            "tensorboard": {
+                "enabled": tensorboard_enabled,
+                "log_dir": str(configured_log_dir) if configured_log_dir is not None else None,
+                "log_name": tb_log_name if tensorboard_enabled else None,
+            },
             "reward": {
                 key: value
                 for key, value in config["environment"].items()

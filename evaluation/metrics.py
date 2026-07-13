@@ -6,6 +6,13 @@ import numpy as np
 import pandas as pd
 
 
+def calculate_total_return(equity_curve: pd.Series) -> float:
+    """Calculate total return from an equity curve."""
+    if equity_curve.empty:
+        return 0.0
+    return float(equity_curve.iloc[-1] / equity_curve.iloc[0] - 1)
+
+
 def calculate_sharpe_ratio(returns: pd.Series, periods_per_year: int = 252) -> float:
     """Annualized Sharpe from daily returns."""
     volatility = float(returns.std()) if not returns.empty else 0.0
@@ -21,6 +28,35 @@ def calculate_max_drawdown(equity_curve: pd.Series) -> float:
     running_max = equity_curve.cummax()
     drawdown = equity_curve / running_max - 1
     return float(drawdown.min())
+
+
+def calculate_win_rate(trade_returns: pd.Series) -> float:
+    """Calculate fraction of positive trade returns."""
+    if trade_returns.empty:
+        return 0.0
+    return float((trade_returns > 0).mean())
+
+
+def calculate_number_of_trades(actions: pd.Series) -> int:
+    """Count non-hold actions as trades."""
+    if actions.empty:
+        return 0
+    return int((actions != 0).sum())
+
+
+def calculate_turnover(results: pd.DataFrame) -> float:
+    """Calculate traded notional divided by average portfolio value."""
+    if results.empty or "portfolio_value" not in results:
+        return 0.0
+    portfolio_values = results["portfolio_value"]
+    average_value = float(portfolio_values.mean())
+    if average_value == 0:
+        return 0.0
+    if "trade_value" in results:
+        traded_notional = float(results["trade_value"].abs().sum())
+        return traded_notional / max(abs(average_value), 1e-9)
+    trade_count = calculate_number_of_trades(results["action"])
+    return float(trade_count / max(abs(average_value), 1e-9))
 
 
 def calculate_trade_count(results: pd.DataFrame) -> int:
