@@ -12,6 +12,7 @@ environment:
   initial_cash: 10000.0
   unit_fraction: 0.20
   max_units: 5
+  episode_days: 20
   risk_penalty_rate: 0.0
   turnover_penalty_rate: 0.0
   drawdown_penalty_rate: 0.05
@@ -39,6 +40,10 @@ agent:
   normalization:
     enabled: true
     clip: 5.0
+  tensorboard:
+    enabled: true
+    log_dir: runs/tensorboard
+    log_name: ppo_005930
   ppo:
     learning_rate: 0.0003
     n_steps: 2048

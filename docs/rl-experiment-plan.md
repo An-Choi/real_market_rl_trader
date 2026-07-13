@@ -16,7 +16,9 @@ policy-learning and evaluation loop for adaptive single-symbol position control.
   - `1`: Add 1 Unit
   - `2`: Clear Position
 - Position sizing: fixed unit scaling, 1 Unit = 20% of initial cash, max 5 Units.
-- Episode: one trading day, forced flat at the final bar.
+- Episode: configurable contiguous trading-day window (`environment.episode_days`).
+  The current default experiment uses 20 trading days and forces flat only at
+  the final bar of the window, so overnight price gaps are included.
 
 ## Current Workflow
 
@@ -32,6 +34,39 @@ Train PPO on the train split:
 ```bash
 python experiments/train.py --symbol 005930 --split train --total-timesteps 300000
 ```
+
+Choose the episode length per run without editing YAML:
+
+```bash
+python experiments/train.py --symbol 005930 --split train --episode-days 1
+python experiments/train.py --symbol 005930 --split train --episode-days 20
+```
+
+Use the same `--episode-days` value when backtesting the saved artifact.
+
+Watch PPO training in TensorBoard:
+
+```bash
+tensorboard --logdir runs/tensorboard
+```
+
+TensorBoard logging is enabled by default in `env/configs/config.yaml`. Override it
+per run with `--tensorboard-log-dir <dir>`, `--tensorboard-log-name <name>`, or
+disable it with `--no-tensorboard`.
+
+Custom training charts are grouped under:
+
+- `returns/*`: current/completed episode return, compounded strategy return,
+  compounded benchmark return, and benchmark-relative excess return.
+- `portfolio/*`: mean/latest portfolio value and mean exposure.
+- `actions/*`: Hold/Add/Clear rates for the rollout and the full run.
+- `cost/*`: mean and summed transaction friction.
+- `trading/*`: rollout and cumulative forced-clear counts.
+- `reward/*`: shaped reward and each base, benchmark-relative, inventory,
+  turnover, drawdown, and downside component.
+- `daily/*`: one point per completed trading date for actual/benchmark/excess
+  return, closing portfolio value, friction, exposure, action rates, forced
+  clears, and reward components. `daily/date` stores the date as `YYYYMMDD`.
 
 Backtest baselines on the test split:
 
@@ -70,10 +105,11 @@ Default CLI behavior:
 Validation should be used for choosing reward penalties and basic PPO settings.
 Test should be used only for final out-of-sample comparison.
 
-Backtests evaluate every trading day in the selected split. Episodes still reset
-to the same initial cash each day; metrics compound the independent daily returns
-without treating reset boundaries as market returns. Seeds vary stochastic policy
-behavior, not the selected evaluation date.
+Backtests evaluate non-overlapping episode windows in the selected split. Cash and
+positions carry across day boundaries inside each window, and metrics compound the
+window returns without treating reset boundaries as market returns. The final
+window may contain fewer days when the split length is not divisible by
+`environment.episode_days`.
 
 ## Baselines
 

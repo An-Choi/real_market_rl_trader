@@ -129,7 +129,12 @@ def summarize_backtest(results: pd.DataFrame) -> dict[str, float]:
             if "trade_value" in results
             else 0.0
         )
-        evaluated_days = float(results["episode"].nunique())
+        if "timestamp" in results:
+            evaluated_days = float(
+                pd.to_datetime(results["timestamp"]).dt.date.nunique()
+            )
+        else:
+            evaluated_days = float(results["episode"].nunique())
     else:
         equity_curve = results["portfolio_value"]
         returns = equity_curve.pct_change().dropna()

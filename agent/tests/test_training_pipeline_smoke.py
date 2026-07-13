@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 from data.data_loader import DataLoader
 from data.feature_builder import build_features
@@ -62,7 +63,14 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
             "execution_uncertainty_rate": 0.0,
             "sell_tax_rate": 0.002,
         },
-        "agent": {"rl_model_name": "PPO"},
+        "agent": {
+            "rl_model_name": "PPO",
+            "tensorboard": {
+                "enabled": True,
+                "log_dir": str(tmp_path / "tensorboard"),
+                "log_name": "smoke_ppo",
+            },
+        },
     }
     artifact_dir = train_ppo_artifact(
         featured_data=featured_data,
@@ -94,3 +102,22 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
     assert loaded_agent.model.n_steps == 8
     assert loaded_agent.model.ent_coef == 0.01
     assert action in (0, 1, 2)
+    event_files = list((tmp_path / "tensorboard").rglob("events.out.tfevents.*"))
+    assert event_files
+    event_data = EventAccumulator(str(event_files[0].parent))
+    event_data.Reload()
+    scalar_tags = set(event_data.Tags()["scalars"])
+    assert {
+        "returns/cumulative_return",
+        "returns/benchmark_cumulative_return",
+        "portfolio/value_mean",
+        "actions/hold_rate",
+        "cost/friction_sum",
+        "trading/forced_clear_count",
+        "reward/base_return_mean",
+        "daily/portfolio_return",
+        "daily/benchmark_return",
+        "daily/friction_sum",
+        "daily/hold_rate",
+        "daily/reward_base_return_mean",
+    }.issubset(scalar_tags)

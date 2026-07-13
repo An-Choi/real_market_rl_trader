@@ -41,6 +41,7 @@ class TradingEnvironment(gym.Env):
         initial_cash: float = 10_000.0,
         unit_fraction: float = 0.20,
         max_units: int = 5,
+        episode_days: int = 1,
         friction_model: FrictionModel | None = None,
         risk_penalty_rate: float = 0.0,
         turnover_penalty_rate: float = 0.0,
@@ -69,6 +70,9 @@ class TradingEnvironment(gym.Env):
         self.initial_cash = initial_cash
         self.unit_fraction = unit_fraction
         self.max_units = max_units
+        if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days < 1:
+            raise ValueError("episode_days must be a positive integer")
+        self.episode_days = episode_days
         self.friction_model = friction_model or FrictionModel()
         self.risk_penalty_rate = risk_penalty_rate
         self.reward_config = RewardConfig(
@@ -101,18 +105,26 @@ class TradingEnvironment(gym.Env):
         self.trade_history: list[TradeExecution] = []
 
     def reset(self, seed: int | None = None, options: dict | None = None):
-        """Reset to the start of a single trading day."""
+        """Reset to the start of a contiguous trading-day window."""
         super().reset(seed=seed)
         options = options or {}
         if "date" in options:
             d = options["date"]
             if isinstance(d, str):
                 d = pd.Timestamp(d).date()
-            self._active_date = d
+            if d not in self._date_groups:
+                raise ValueError(f"date is not available in market data: {d}")
+            start_idx = self._available_dates.index(d)
         else:
-            idx = int(self.np_random.integers(0, len(self._available_dates)))
-            self._active_date = self._available_dates[idx]
-        self._active_index = self._date_groups[self._active_date]
+            max_start = max(len(self._available_dates) - self.episode_days, 0)
+            start_idx = int(self.np_random.integers(0, max_start + 1))
+
+        active_dates = self._available_dates[start_idx : start_idx + self.episode_days]
+        self._active_dates = tuple(active_dates)
+        self._active_date = self._active_dates[0]
+        self._active_index = np.concatenate(
+            [self._date_groups[active_date] for active_date in self._active_dates]
+        )
 
         self.current_step = 0
         self.cash = self.initial_cash
@@ -127,12 +139,14 @@ class TradingEnvironment(gym.Env):
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
             "date": str(self._active_date),
+            "end_date": str(self._active_dates[-1]),
+            "episode_days": len(self._active_dates),
         }
 
     @property
     def available_dates(self) -> tuple:
-        """Trading dates available for deterministic full-split evaluation."""
-        return tuple(self._available_dates)
+        """Non-overlapping episode starts for deterministic split evaluation."""
+        return tuple(self._available_dates[:: self.episode_days])
 
     def _row_at(self, local_step: int) -> pd.Series:
         """Map a local (within-day) step to the global market row."""
@@ -140,7 +154,7 @@ class TradingEnvironment(gym.Env):
         return self.market_data.iloc[global_idx]
 
     def step(self, action: int):
-        """Advance one step; force-clear and terminate at the day's last bar."""
+        """Advance one step; force-clear at the episode window's last bar."""
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
 
@@ -150,7 +164,9 @@ class TradingEnvironment(gym.Env):
 
         previous_value = self.portfolio_value
         previous_peak_value = self.peak_portfolio_value
-        previous_market_price = float(self._row_at(self.current_step)[self.price_col])
+        execution_row = self._row_at(self.current_step)
+        previous_market_price = float(execution_row[self.price_col])
+        execution_timestamp = pd.Timestamp(execution_row["Timestamp"])
         if is_last:
             # 마감 강제청산: agent action(Add/Hold)을 무시하고 무조건 Clear한다.
             # 보유분이 없으면 Clear는 no-op이라 안전하며, 새 진입도 막힌다.
@@ -162,7 +178,9 @@ class TradingEnvironment(gym.Env):
         if not is_last:
             self.current_step += 1
         self.portfolio_value = self._calculate_portfolio_value()
-        current_market_price = float(self._row_at(self.current_step)[self.price_col])
+        valuation_row = self._row_at(self.current_step)
+        current_market_price = float(valuation_row[self.price_col])
+        valuation_timestamp = pd.Timestamp(valuation_row["Timestamp"])
         reward_terms = self._calculate_reward(
             previous_value=previous_value,
             current_value=self.portfolio_value,
@@ -182,9 +200,12 @@ class TradingEnvironment(gym.Env):
             "friction_cost": execution.friction_cost,
             "trade_value": execution.trade_value,
             "forced_clear": forced_clear,
+            "execution_date": str(execution_timestamp.date()),
+            "valuation_date": str(valuation_timestamp.date()),
             "portfolio_return": reward_terms.portfolio_return,
             "base_return": reward_terms.base_return,
             "benchmark_return": reward_terms.benchmark_return,
+            "benchmark_simple_return": reward_terms.benchmark_simple_return,
             "benchmark_relative_reward": reward_terms.benchmark_relative_reward,
             "inventory_penalty": reward_terms.inventory_penalty,
             "turnover_penalty": reward_terms.turnover_penalty,
@@ -211,7 +232,11 @@ class TradingEnvironment(gym.Env):
             holding_duration_norm = (self.current_step - self.entry_step) / max(n - 1, 1)
         else:
             holding_duration_norm = 0.0
-        tod_frac = self.current_step / max(n - 1, 1)
+        global_idx = int(self._active_index[self.current_step])
+        current_date = pd.Timestamp(row["Timestamp"]).date()
+        day_indices = self._date_groups[current_date]
+        day_step = int(np.searchsorted(day_indices, global_idx))
+        tod_frac = day_step / max(len(day_indices) - 1, 1)
         portfolio_state = np.array(
             [units_held_frac, unrealized_pnl_norm, holding_duration_norm, tod_frac],
             dtype=np.float32,

@@ -31,6 +31,7 @@ class RewardTerms:
     portfolio_return: float
     base_return: float
     benchmark_return: float
+    benchmark_simple_return: float
     benchmark_relative_reward: float
     inventory_penalty: float
     turnover_penalty: float
@@ -53,6 +54,9 @@ def calculate_reward_terms(
     """Calculate scaled return reward with explicit, ablatable shaping terms."""
     safe_previous = max(previous_value, 1e-9)
     portfolio_return = (current_value - previous_value) / safe_previous
+    benchmark_simple_return = (
+        current_market_price - previous_market_price
+    ) / max(previous_market_price, 1e-9)
     if config.return_mode == "log_return":
         base_return = math.log(max(current_value, 1e-9) / safe_previous)
         benchmark_return = math.log(
@@ -60,9 +64,7 @@ def calculate_reward_terms(
         )
     elif config.return_mode == "simple_return":
         base_return = portfolio_return
-        benchmark_return = (
-            current_market_price - previous_market_price
-        ) / max(previous_market_price, 1e-9)
+        benchmark_return = benchmark_simple_return
     else:
         raise ValueError(f"unsupported reward return_mode: {config.return_mode}")
 
@@ -94,6 +96,7 @@ def calculate_reward_terms(
         portfolio_return=float(portfolio_return),
         base_return=float(base_return),
         benchmark_return=float(benchmark_return),
+        benchmark_simple_return=float(benchmark_simple_return),
         benchmark_relative_reward=float(benchmark_relative_reward),
         inventory_penalty=float(inventory_penalty),
         turnover_penalty=float(turnover_penalty),

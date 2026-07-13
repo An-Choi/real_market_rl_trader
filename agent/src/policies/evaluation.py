@@ -19,9 +19,12 @@ from policies.baseline_agents import SUPPORTED_BASELINES, make_baseline_agent
 BACKTEST_INFO_KEYS = (
     "trade_value",
     "forced_clear",
+    "execution_date",
+    "valuation_date",
     "portfolio_return",
     "base_return",
     "benchmark_return",
+    "benchmark_simple_return",
     "benchmark_relative_reward",
     "inventory_penalty",
     "turnover_penalty",
@@ -56,7 +59,7 @@ class BacktestEngine:
         seed: int | None = None,
         dates: list[Any] | tuple[Any, ...] | None = None,
     ) -> pd.DataFrame:
-        """Execute every trading day in the supplied evaluation split."""
+        """Execute each non-overlapping episode window in the evaluation split."""
         evaluation_dates = dates
         if evaluation_dates is None:
             evaluation_dates = getattr(self.environment, "available_dates", (None,))
@@ -133,6 +136,7 @@ def build_backtest_environment(featured_data: Any, config: dict[str, Any]) -> Tr
         initial_cash=config["environment"]["initial_cash"],
         unit_fraction=config["environment"]["unit_fraction"],
         max_units=config["environment"]["max_units"],
+        episode_days=int(config["environment"].get("episode_days", 1)),
         friction_model=FrictionModel(**config["friction"]),
         risk_penalty_rate=config["environment"]["risk_penalty_rate"],
         turnover_penalty_rate=config["environment"].get("turnover_penalty_rate", 0.0),

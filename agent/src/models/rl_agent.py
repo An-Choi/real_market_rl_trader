@@ -35,12 +35,24 @@ class RLAgent:
 
         self.model = PPO(self.policy, env, **self.model_kwargs)
 
-    def train(self, env: Any, total_timesteps: int) -> None:
+    def train(
+        self,
+        env: Any,
+        total_timesteps: int,
+        *,
+        tb_log_name: str | None = None,
+        callback: Any | None = None,
+    ) -> None:
         """Train the RL model."""
         # TODO: Add callbacks, evaluation environments, and checkpointing.
         if self.model is None:
             self.build(env)
-        self.model.learn(total_timesteps=total_timesteps)
+        learn_kwargs = {"total_timesteps": total_timesteps}
+        if tb_log_name is not None:
+            learn_kwargs["tb_log_name"] = tb_log_name
+        if callback is not None:
+            learn_kwargs["callback"] = callback
+        self.model.learn(**learn_kwargs)
 
     def predict(self, observation: Any, deterministic: bool = True) -> tuple[int, Any]:
         """Predict an action from an observation."""
