@@ -80,7 +80,10 @@ def test_backtest_entrypoint_runs_on_synthetic_data(tmp_path: Path) -> None:
         "max_drawdown",
         "trade_count",
         "final_portfolio_value",
-        "forced_clear_count",
+        "overnight_hold_rate",
+        "open_at_end",
+        "terminal_liquidation_cost",
+        "market_return",
     }
 
 
@@ -164,6 +167,10 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
         market_data=featured_data,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         friction_model=FrictionModel(),
+        episode_days=20,
+        duration_horizon_bars=1280,
+        nominal_bars_per_day=64,
+        feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
     )
     agent = RLAgent(model_kwargs={
         "seed": 0,
@@ -183,6 +190,9 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
             "unit_fraction": env.unit_fraction,
             "max_units": env.max_units,
             "initial_cash": env.initial_cash,
+            "episode_days": env.episode_days,
+            "duration_horizon_bars": env.duration_horizon_bars,
+            "nominal_bars_per_day": env.nominal_bars_per_day,
         },
     )
     artifact_dir = save_artifact(agent, metadata, tmp_path / "artifacts")

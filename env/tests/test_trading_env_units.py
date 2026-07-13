@@ -185,10 +185,10 @@ def test_clear_sell_tax_on_market_proceeds() -> None:
     assert info["friction_cost"] == pytest.approx(2200.0 * sell_tax_rate)
 
 
-def test_last_bar_add_is_force_cleared() -> None:
-    """마지막 bar에서 보유 0인데 Add를 줘도 마감 강제청산이 우선해 flat으로 끝난다.
+def test_last_executable_bar_add_executes() -> None:
+    """마지막 실행 bar(B−2)의 Add도 그대로 실행된다 — 강제청산 없음.
 
-    spec: 마지막 step은 agent action(Add/Hold)을 무시하고 강제 Clear한다.
+    spec r5 §3.2: env는 어떤 정산·강제 거래도 하지 않는다.
     """
     prices = [100.0, 101.0, 102.0]
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
@@ -202,12 +202,11 @@ def test_last_bar_add_is_force_cleared() -> None:
         max_units=5,
     )
     env.reset(seed=0)
-    env.step(0)  # Hold (step 0)
-    env.step(0)  # Hold (step 1)
-    _, _, terminated, _, info = env.step(1)  # last bar (step 2): Add → must be ignored
+    env.step(0)  # bar0 실행 (3 bars → 2 steps)
+    _, _, terminated, truncated, info = env.step(1)  # 마지막 실행 bar: Add
 
-    assert terminated is True
-    assert info["units_held"] == 0
+    assert truncated is True and terminated is False
+    assert info["units_held"] == 1
 
 
 def test_clear_sell_tax_exact_amount(flat_data: pd.DataFrame) -> None:

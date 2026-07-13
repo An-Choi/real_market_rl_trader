@@ -72,6 +72,12 @@ def make_metadata(**overrides) -> ArtifactMetadata:
     return ArtifactMetadata(**base)
 
 
+@pytest.fixture
+def valid_metadata_dict() -> dict:
+    """v1 valid metadata dict (normalization=None) — v2/legacy-gate 테스트가 공유."""
+    return make_metadata().to_dict()
+
+
 def _write_fake_artifact(root, meta_dict, with_model=True):
     """SB3 없이 만드는 가짜 artifact (load_metadata 단독 테스트용)."""
     art = root / meta_dict["artifact_id"]
@@ -250,7 +256,8 @@ class TestLoadArtifact:
         meta = make_metadata()
         out = save_artifact(built_agent, meta, tmp_path)
 
-        loaded_agent, loaded_meta = load_artifact(out)
+        with pytest.warns(UserWarning, match="legacy"):
+            loaded_agent, loaded_meta = load_artifact(out, allow_legacy_semantics=True)
         assert loaded_meta == meta
 
         obs = np.arange(OBS_DIM, dtype=np.float32) / OBS_DIM
@@ -260,8 +267,8 @@ class TestLoadArtifact:
 
     def test_non_ppo_algo_rejected(self, tmp_path):
         art = _write_fake_artifact(tmp_path, make_metadata(algo="DQN").to_dict())
-        with pytest.raises(ArtifactError, match="DQN"):
-            load_artifact(art)
+        with pytest.warns(UserWarning, match="legacy"), pytest.raises(ArtifactError, match="DQN"):
+            load_artifact(art, allow_legacy_semantics=True)
 
     def test_invalid_artifact_rejected_before_sb3_load(self, tmp_path):
         with pytest.raises(ArtifactError, match="metadata.json"):
@@ -355,8 +362,8 @@ class TestMetadataHardening:
         )
         art = _write_fake_artifact(tmp_path, meta.to_dict())
         (art / "vecnormalize.pkl").write_bytes(b"fake-stats")
-        with pytest.raises(ArtifactError, match="normalization"):
-            load_artifact(art)
+        with pytest.warns(UserWarning, match="legacy"), pytest.raises(ArtifactError, match="normalization"):
+            load_artifact(art, allow_legacy_semantics=True)
 
     def test_normalization_file_reserved_name_rejected(self):
         # "model.zip"이면 모델이 stats로 덮어써지고, "metadata.json"이면 stats가 유실된다.
@@ -365,3 +372,244 @@ class TestMetadataHardening:
             data["normalization"] = {"type": "sb3_vecnormalize", "file": reserved}
             with pytest.raises(ArtifactError, match="reserved"):
                 ArtifactMetadata.from_dict(data)
+
+
+def _v2_env_params() -> dict:
+    return {
+        "unit_fraction": 0.2,
+        "max_units": 5,
+        "initial_cash": 10_000.0,
+        "episode_days": 20,
+        "duration_horizon_bars": 1280,
+        "nominal_bars_per_day": 64,
+    }
+
+
+def test_v2_metadata_requires_new_env_params(valid_metadata_dict) -> None:
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    with pytest.raises(ArtifactError, match="env_params"):
+        ArtifactMetadata.from_dict(data)  # v1 키만 있음 → 거부
+    data["env_params"] = _v2_env_params()
+    ArtifactMetadata.from_dict(data)  # 통과
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, True])
+def test_v2_positive_int_validation(valid_metadata_dict, bad) -> None:
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    params = _v2_env_params()
+    params["episode_days"] = bad
+    data["env_params"] = params
+    with pytest.raises(ArtifactError):
+        ArtifactMetadata.from_dict(data)
+
+
+def test_v1_metadata_still_loads_without_new_keys(valid_metadata_dict) -> None:
+    ArtifactMetadata.from_dict(dict(valid_metadata_dict))  # v1 회귀 금지
+
+
+def test_load_artifact_rejects_v1_by_default(tmp_path, valid_metadata_dict) -> None:
+    artifact_dir = tmp_path / "legacy-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(
+        json.dumps(valid_metadata_dict), encoding="utf-8"
+    )
+    with pytest.raises(ArtifactError, match="legacy"):
+        load_artifact(artifact_dir)
+
+
+def test_load_artifact_v1_opt_in_passes_gate(tmp_path, valid_metadata_dict, monkeypatch) -> None:
+    artifact_dir = tmp_path / "legacy-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(
+        json.dumps(valid_metadata_dict), encoding="utf-8"
+    )
+
+    class StubAgent:
+        def __init__(self, **kwargs):
+            self.loaded = None
+
+        def load(self, path, env=None):
+            self.loaded = path
+
+    import models.rl_agent as rl_agent_module
+    monkeypatch.setattr(rl_agent_module, "RLAgent", StubAgent)
+    with pytest.warns(UserWarning, match="legacy"):
+        agent, meta = load_artifact(artifact_dir, allow_legacy_semantics=True)
+    assert meta.artifact_format_version == 1
+
+
+def test_load_artifact_v2_rejects_mismatched_env_semantics(
+    tmp_path, valid_metadata_dict
+) -> None:
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()  # duration_horizon_bars=1280
+    artifact_dir = tmp_path / "v2-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+
+    class MismatchedEnv:
+        duration_horizon_bars = 640  # 학습 당시 1280과 불일치
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+        nominal_bars_per_day = 64
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
+
+    with pytest.raises(ArtifactError, match="duration_horizon_bars"):
+        load_artifact(artifact_dir, env=MismatchedEnv())
+
+
+def _matching_v2_artifact(tmp_path, valid_metadata_dict) -> Path:
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()
+    artifact_dir = tmp_path / "v2-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+    return artifact_dir
+
+
+def test_load_artifact_v2_rejects_mismatched_feature_columns(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """feature_columns 이름/순서가 다르면 차원(개수)이 같아도 거부해야 한다 —
+    observation semantics가 조용히 달라지는 것을 막는 fail-closed 계약."""
+    artifact_dir = _matching_v2_artifact(tmp_path, valid_metadata_dict)
+    mismatched_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+    mismatched_columns[0], mismatched_columns[1] = mismatched_columns[1], mismatched_columns[0]
+
+    class MismatchedFeaturesEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_columns = mismatched_columns
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
+
+    with pytest.raises(ArtifactError, match="feature_columns"):
+        load_artifact(artifact_dir, env=MismatchedFeaturesEnv())
+
+
+def test_load_artifact_v2_rejects_env_without_feature_columns(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """env가 feature_columns를 노출하지 않으면 검증 불가 → 거부(fail-closed)."""
+    artifact_dir = _matching_v2_artifact(tmp_path, valid_metadata_dict)
+
+    class NoFeatureColumnsEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
+
+    with pytest.raises(ArtifactError, match="feature_columns"):
+        load_artifact(artifact_dir, env=NoFeatureColumnsEnv())
+
+
+def test_load_artifact_v2_rejects_mismatched_feature_schema_version(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """feature_columns 이름/순서가 같아도 계산식이 바뀐 schema(version 999)면 거부해야 한다."""
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()
+    data["feature_schema_version"] = 999
+    artifact_dir = tmp_path / "v2-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+
+    class SchemaMismatchEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
+
+    with pytest.raises(ArtifactError, match="feature_schema_version"):
+        load_artifact(artifact_dir, env=SchemaMismatchEnv())
+
+
+def test_load_artifact_v2_rejects_env_without_feature_schema_version(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """env가 feature_schema_version을 노출하지 않으면 검증 불가 → 거부(fail-closed)."""
+    artifact_dir = _matching_v2_artifact(tmp_path, valid_metadata_dict)
+
+    class NoSchemaVersionEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+
+    with pytest.raises(ArtifactError, match="feature_schema_version"):
+        load_artifact(artifact_dir, env=NoSchemaVersionEnv())
+
+
+def test_load_artifact_v2_rejects_reversed_action_labels(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """labels 순서가 뒤집히면(n은 동일) trading_env의 action 계약과 어긋난다 —
+    조용한 오거래(model action 0 != env Hold)를 막는 fail-closed 계약."""
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()
+    data["action_space"] = {"type": "discrete", "n": 3, "labels": ["clear", "add_unit", "hold"]}
+    artifact_dir = tmp_path / "v2-artifact"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+
+    class MatchingEnv:
+        unit_fraction = 0.2
+        max_units = 5
+        initial_cash = 10_000.0
+        episode_days = 20
+        duration_horizon_bars = 1280
+        nominal_bars_per_day = 64
+        feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+        feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
+
+        class action_space:
+            n = 3
+
+    with pytest.raises(ArtifactError, match="labels"):
+        load_artifact(artifact_dir, env=MatchingEnv())
+
+
+def test_load_artifact_rejects_reversed_action_labels_without_env(
+    tmp_path, valid_metadata_dict
+) -> None:
+    """env=None로 로드해도 labels 계약은 env 속성과 무관하게 검증돼야 한다 —
+    _check_env_compatibility()는 env is None이면 즉시 return하므로 이 검사를
+    우회해선 안 된다(labels는 고정 artifact 계약이지 env 속성 비교가 아님)."""
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 2
+    data["env_params"] = _v2_env_params()
+    data["action_space"] = {"type": "discrete", "n": 3, "labels": ["clear", "add_unit", "hold"]}
+    artifact_dir = tmp_path / "v2-artifact-no-env"
+    artifact_dir.mkdir()
+    (artifact_dir / "model.zip").write_bytes(b"")
+    (artifact_dir / "metadata.json").write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ArtifactError, match="labels"):
+        load_artifact(artifact_dir)

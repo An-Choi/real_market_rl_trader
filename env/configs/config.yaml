@@ -12,6 +12,8 @@ environment:
   initial_cash: 10000.0
   unit_fraction: 0.20
   max_units: 5
+  episode_days: 20            # 학습 episode = 연속 20거래일
+  nominal_bars_per_day: 64    # duration_horizon_bars = episode_days * nominal_bars_per_day
   risk_penalty_rate: 0.0
   turnover_penalty_rate: 0.0
   drawdown_penalty_rate: 0.05

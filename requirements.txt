@@ -2,8 +2,8 @@ pandas
 numpy
 matplotlib
 pyyaml
-gymnasium
-stable-baselines3
+gymnasium==1.1.1
+stable-baselines3==2.7.1
 requests
 pyarrow
 responses
