@@ -94,12 +94,12 @@ def test_multi_day_episode_crosses_day_boundary(two_day_data: pd.DataFrame) -> N
     env = make_multi_day_env(two_day_data, episode_days=2)
     _, reset_info = env.reset(seed=0, options={"date": "2025-06-02"})
     timestamps = []
-    terminated = False
-    while not terminated:
+    truncated = False
+    while not truncated:
         timestamps.append(env.get_current_market_row()["Timestamp"])
-        _, _, terminated, _, _ = env.step(0)
+        _, _, _, truncated, _ = env.step(0)
 
-    assert len(timestamps) == 10
+    assert len(timestamps) == 10 - 1  # B bars → B−1 steps (마지막 bar는 valuation 전용)
     assert pd.Timestamp(timestamps[0]).date() != pd.Timestamp(timestamps[-1]).date()
     assert reset_info["episode_days"] == 2
     assert reset_info["end_date"] == "2025-06-03"
@@ -132,9 +132,12 @@ def test_multi_day_tod_fraction_resets_each_day(two_day_data: pd.DataFrame) -> N
     assert observation[-1] == pytest.approx(0.0)
 
 
-def test_available_dates_are_non_overlapping_episode_starts(two_day_data: pd.DataFrame) -> None:
+def test_available_dates_lists_all_trading_days(two_day_data: pd.DataFrame) -> None:
     env = make_multi_day_env(two_day_data, episode_days=2)
-    assert env.available_dates == (pd.Timestamp("2025-06-02").date(),)
+    assert env.available_dates == (
+        pd.Timestamp("2025-06-02").date(),
+        pd.Timestamp("2025-06-03").date(),
+    )
 
 
 def test_episode_days_must_be_positive(two_day_data: pd.DataFrame) -> None:

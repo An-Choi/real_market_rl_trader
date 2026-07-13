@@ -46,7 +46,6 @@ def build_training_environment(
         initial_cash=environment_config["initial_cash"],
         unit_fraction=environment_config["unit_fraction"],
         max_units=environment_config["max_units"],
-        episode_days=int(environment_config.get("episode_days", 1)),
         friction_model=FrictionModel(**friction_config),
         risk_penalty_rate=environment_config["risk_penalty_rate"],
         turnover_penalty_rate=environment_config.get("turnover_penalty_rate", 0.0),

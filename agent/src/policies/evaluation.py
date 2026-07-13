@@ -21,7 +21,6 @@ BACKTEST_INFO_KEYS = (
     "valuation_price",
     "held_market_value",
     "trade_value",
-    "forced_clear",
     "execution_date",
     "valuation_date",
     "portfolio_return",
@@ -63,10 +62,19 @@ class BacktestEngine:
         max_steps: int | None = None,
         seed: int | None = None,
     ) -> pd.DataFrame:
-        """Execute each non-overlapping episode window in the evaluation split."""
-        evaluation_dates = dates
-        if evaluation_dates is None:
-            evaluation_dates = getattr(self.environment, "available_dates", (None,))
+        """Split 전체(available_dates)를 단일 연속 episode로 실행한다.
+
+        환경 경로는 seed와 무관하다(시작일·윈도우가 데이터로 고정).
+        stochastic policy의 action 경로만 agent seed에 의존한다.
+        """
+        env = self.environment
+        dates = env.available_dates
+        if hasattr(self.agent, "reset"):
+            self.agent.reset()
+        observation, self.reset_info = env.reset(
+            seed=seed,
+            options={"start_date": dates[0], "episode_days": len(dates)},
+        )
         self.results = []
         self.terminal_liquidation_cost = 0.0
 
@@ -128,7 +136,6 @@ def build_backtest_environment(featured_data: Any, config: dict[str, Any]) -> Tr
         initial_cash=config["environment"]["initial_cash"],
         unit_fraction=config["environment"]["unit_fraction"],
         max_units=config["environment"]["max_units"],
-        episode_days=int(config["environment"].get("episode_days", 1)),
         friction_model=FrictionModel(**config["friction"]),
         risk_penalty_rate=environment_config["risk_penalty_rate"],
         turnover_penalty_rate=environment_config.get("turnover_penalty_rate", 0.0),

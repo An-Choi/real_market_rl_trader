@@ -41,7 +41,6 @@ class TradingEnvironment(gym.Env):
         initial_cash: float = 10_000.0,
         unit_fraction: float = 0.20,
         max_units: int = 5,
-        episode_days: int = 1,
         friction_model: FrictionModel | None = None,
         risk_penalty_rate: float = 0.0,
         turnover_penalty_rate: float = 0.0,
@@ -78,7 +77,7 @@ class TradingEnvironment(gym.Env):
         }
         self._available_dates = sorted(self._date_groups.keys())
         if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
-            raise ValueError(f"episode_days must be a positive int: {episode_days!r}")
+            raise ValueError(f"episode_days must be a positive integer: {episode_days!r}")
         self.episode_days = episode_days
         if (
             isinstance(nominal_bars_per_day, bool)
@@ -109,9 +108,6 @@ class TradingEnvironment(gym.Env):
         self.initial_cash = initial_cash
         self.unit_fraction = unit_fraction
         self.max_units = max_units
-        if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days < 1:
-            raise ValueError("episode_days must be a positive integer")
-        self.episode_days = episode_days
         self.friction_model = friction_model or FrictionModel()
         self.risk_penalty_rate = risk_penalty_rate
         self.reward_config = RewardConfig(
@@ -144,26 +140,39 @@ class TradingEnvironment(gym.Env):
         self.trade_history: list[TradeExecution] = []
 
     def reset(self, seed: int | None = None, options: dict | None = None):
-        """Reset to the start of a contiguous trading-day window."""
+        """연속 episode_days 거래일 윈도우의 시작으로 reset한다."""
         super().reset(seed=seed)
         options = options or {}
-        if "date" in options:
-            d = options["date"]
-            if isinstance(d, str):
-                d = pd.Timestamp(d).date()
-            if d not in self._date_groups:
-                raise ValueError(f"date is not available in market data: {d}")
-            start_idx = self._available_dates.index(d)
-        else:
-            max_start = max(len(self._available_dates) - self.episode_days, 0)
-            start_idx = int(self.np_random.integers(0, max_start + 1))
+        episode_days = options.get("episode_days", self.episode_days)
+        if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
+            raise ValueError(f"episode_days must be a positive integer: {episode_days!r}")
 
-        active_dates = self._available_dates[start_idx : start_idx + self.episode_days]
-        self._active_dates = tuple(active_dates)
-        self._active_date = self._active_dates[0]
-        self._active_index = np.concatenate(
-            [self._date_groups[active_date] for active_date in self._active_dates]
-        )
+        start = options.get("start_date", options.get("date"))
+        n_dates = len(self._available_dates)
+        if start is not None:
+            if isinstance(start, str):
+                start = pd.Timestamp(start).date()
+            if start not in self._date_groups:
+                raise ValueError(f"unknown trading date: {start}")
+            start_idx = self._available_dates.index(start)
+            # 명시 지정은 남은 일수로 truncate 수용
+            effective_days = min(episode_days, n_dates - start_idx)
+        else:
+            # 데이터가 episode_days보다 짧으면 가용 전체로 truncate (짧은 fixture 허용)
+            effective_days = min(episode_days, n_dates)
+            last_start = n_dates - effective_days
+            start_idx = int(self.np_random.integers(0, last_start + 1))
+
+        self._episode_dates = self._available_dates[start_idx:start_idx + effective_days]
+        self._active_date = self._episode_dates[0]
+        index_parts = [self._date_groups[d] for d in self._episode_dates]
+        self._active_index = np.concatenate(index_parts)
+        lengths = [len(part) for part in index_parts]
+        self._day_start_offsets = np.cumsum([0] + lengths[:-1])
+        if len(self._active_index) < 2:
+            raise ValueError(
+                f"episode window needs at least 2 bars, got {len(self._active_index)}"
+            )
 
         self.current_step = 0
         self.cash = self.initial_cash
@@ -178,14 +187,15 @@ class TradingEnvironment(gym.Env):
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
             "date": str(self._active_date),
-            "end_date": str(self._active_dates[-1]),
-            "episode_days": len(self._active_dates),
+            "end_date": str(self._episode_dates[-1]),
+            "episode_days": effective_days,
+            "initial_market_price": float(self._row_at(0)[self.price_col]),
         }
 
     @property
     def available_dates(self) -> tuple:
-        """Non-overlapping episode starts for deterministic split evaluation."""
-        return tuple(self._available_dates[:: self.episode_days])
+        """Trading dates available for deterministic full-split evaluation."""
+        return tuple(self._available_dates)
 
     def _row_at(self, local_step: int) -> pd.Series:
         """Map a local (within-day) step to the global market row."""
@@ -193,7 +203,12 @@ class TradingEnvironment(gym.Env):
         return self.market_data.iloc[global_idx]
 
     def step(self, action: int):
-        """Advance one step; force-clear at the episode window's last bar."""
+        """bar t에서 실행 → t+1로 전진해 평가·관측. 마지막 bar는 valuation 전용.
+
+        B개 bar짜리 episode는 B−1 step이며 마지막 step은 truncated=True를
+        반환한다(terminated 아님 — continuing task, SB3가 V(s)로 bootstrap).
+        강제청산·정산은 env에 없다.
+        """
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
 
@@ -202,13 +217,7 @@ class TradingEnvironment(gym.Env):
         execution_row = self._row_at(self.current_step)
         previous_market_price = float(execution_row[self.price_col])
         execution_timestamp = pd.Timestamp(execution_row["Timestamp"])
-        if is_last:
-            # 마감 강제청산: agent action(Add/Hold)을 무시하고 무조건 Clear한다.
-            # 보유분이 없으면 Clear는 no-op이라 안전하며, 새 진입도 막힌다.
-            forced_clear = self.units_held > 0
-            execution = self._execute_trade(ACTION_CLEAR)
-        else:
-            execution = self._execute_trade(action)
+        execution = self._execute_trade(action)
 
         self.current_step += 1
         self.portfolio_value = self._calculate_portfolio_value()
@@ -231,9 +240,11 @@ class TradingEnvironment(gym.Env):
             "units_held": self.units_held,
             "friction_cost": execution.friction_cost,
             "trade_value": execution.trade_value,
-            "forced_clear": forced_clear,
             "execution_date": str(execution_timestamp.date()),
             "valuation_date": str(valuation_timestamp.date()),
+            "valuation_timestamp": valuation_row["Timestamp"],
+            "valuation_price": current_market_price,
+            "held_market_value": self._held_market_value(current_market_price),
             "portfolio_return": reward_terms.portfolio_return,
             "base_return": reward_terms.base_return,
             "benchmark_return": reward_terms.benchmark_return,
@@ -287,11 +298,15 @@ class TradingEnvironment(gym.Env):
             )
         else:
             holding_duration_norm = 0.0
-        global_idx = int(self._active_index[self.current_step])
-        current_date = pd.Timestamp(row["Timestamp"]).date()
-        day_indices = self._date_groups[current_date]
-        day_step = int(np.searchsorted(day_indices, global_idx))
-        tod_frac = day_step / max(len(day_indices) - 1, 1)
+
+        day_idx = int(
+            np.searchsorted(self._day_start_offsets, self.current_step, side="right")
+        ) - 1
+        day_start = int(self._day_start_offsets[day_idx])
+        tod_frac = min(
+            (self.current_step - day_start) / max(self.nominal_bars_per_day - 1, 1), 1.0
+        )
+
         portfolio_state = np.array(
             [units_held_frac, unrealized_pnl_norm, holding_duration_norm, tod_frac],
             dtype=np.float32,
