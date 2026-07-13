@@ -16,10 +16,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_FORMAT_VERSIONS = (1,)
+SUPPORTED_FORMAT_VERSIONS = (1, 2)
 KNOWN_ACTION_TYPES = ("discrete",)
 KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize", "feature_standardization")
-REQUIRED_ENV_PARAMS = ("unit_fraction", "max_units", "initial_cash")
+REQUIRED_ENV_PARAMS_BY_VERSION = {
+    1: ("unit_fraction", "max_units", "initial_cash"),
+    2: (
+        "unit_fraction",
+        "max_units",
+        "initial_cash",
+        "episode_days",
+        "duration_horizon_bars",
+        "nominal_bars_per_day",
+    ),
+}
+# v1 alias — 기존 테스트/외부 참조 호환
+REQUIRED_ENV_PARAMS = REQUIRED_ENV_PARAMS_BY_VERSION[1]
+POSITIVE_INT_ENV_PARAMS = ("episode_days", "duration_horizon_bars", "nominal_bars_per_day")
+LEGACY_SEMANTICS_MAX_VERSION = 1  # v1 = 당일 기준 holding_duration_norm으로 학습됨
+# trading_env의 ACTION_HOLD=0 / ACTION_ADD=1 / ACTION_CLEAR=2와 순서 고정 계약
+EXPECTED_ACTION_LABELS = ["hold", "add_unit", "clear"]
 METADATA_FILENAME = "metadata.json"
 MODEL_FILENAME = "model.zip"
 DEFAULT_PORTFOLIO_STATE_FIELDS = [
@@ -144,13 +160,21 @@ class ArtifactMetadata:
         env = self.env_params
         if not isinstance(env, dict):
             raise ArtifactError(f"env_params must be a dict: {env!r}")
-        missing_params = [k for k in REQUIRED_ENV_PARAMS if k not in env]
+        required = REQUIRED_ENV_PARAMS_BY_VERSION[self.artifact_format_version]
+        missing_params = [k for k in required if k not in env]
         if missing_params:
             raise ArtifactError(f"env_params missing keys: {missing_params}")
-        for key in REQUIRED_ENV_PARAMS:
+        for key in required:
             value = env[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ArtifactError(f"env_params[{key!r}] must be numeric: {value!r}")
+        for key in POSITIVE_INT_ENV_PARAMS:
+            if key in required:
+                value = env[key]
+                if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                    raise ArtifactError(
+                        f"env_params[{key!r}] must be a positive int: {value!r}"
+                    )
         if not isinstance(self.training_params, dict):
             raise ArtifactError("training_params must be a dict")
 
@@ -180,7 +204,7 @@ def make_training_metadata(
     train_end = str(timestamps.max().date()) if not timestamps.empty else "unknown"
 
     return ArtifactMetadata(
-        artifact_format_version=1,
+        artifact_format_version=2,
         artifact_id=make_artifact_id(agent.model_name, feature_schema_version),
         created_at=datetime.now(timezone.utc).isoformat(),
         algo=agent.model_name,
@@ -189,7 +213,7 @@ def make_training_metadata(
         feature_columns=list(feature_columns),
         portfolio_state_fields=portfolio_fields,
         observation_dim=len(feature_columns) + len(portfolio_fields),
-        action_space={"type": "discrete", "n": 3, "labels": ["hold", "add_unit", "clear"]},
+        action_space={"type": "discrete", "n": 3, "labels": list(EXPECTED_ACTION_LABELS)},
         normalization=normalization,
         train_git_sha=current_git_sha(),
         train_data={"symbols": [symbol], "start": train_start, "end": train_end},
@@ -218,12 +242,118 @@ def load_metadata(artifact_dir: "str | Path") -> ArtifactMetadata:
     return meta
 
 
+# v2 artifact를 실행 env에 연결할 때 observation 의미를 좌우하는 파라미터.
+# config가 바뀌어도 학습 당시 값과 다른 env에 조용히 연결되는 것을 막는다
+# (v1을 거부하는 이유와 동일한 입력 계약).
+SEMANTIC_ENV_PARAMS = (
+    "duration_horizon_bars",
+    "unit_fraction",
+    "max_units",
+    "initial_cash",
+    "nominal_bars_per_day",
+)
+
+
+def _check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
+    """v2 artifact와 실행 env의 observation 의미론 파라미터 일치 검증 (fail-closed).
+
+    wrapper(gym.Wrapper 계열)는 .unwrapped로 실제 env를 찾고, 그래도 semantic
+    파라미터를 노출하지 않으면 검증 불가로 거부한다 — 조용한 불일치 방지가 목적.
+    """
+    if env is None:
+        return
+    target = getattr(env, "unwrapped", env)
+
+    env_schema_version = getattr(target, "feature_schema_version", None)
+    if env_schema_version is None:
+        raise ArtifactError(
+            "env does not declare 'feature_schema_version'; cannot verify observation semantics"
+        )
+    if int(env_schema_version) != int(meta.feature_schema_version):
+        raise ArtifactError(
+            f"env feature_schema_version={env_schema_version!r} != artifact "
+            f"feature_schema_version={meta.feature_schema_version!r}; "
+            "feature 계산식이 다른 schema — observation semantics would silently differ"
+        )
+
+    for key in SEMANTIC_ENV_PARAMS:
+        env_value = getattr(target, key, None)
+        if env_value is None:
+            raise ArtifactError(
+                f"env does not expose {key!r}; cannot verify observation semantics"
+            )
+        meta_value = meta.env_params.get(key)
+        if float(env_value) != float(meta_value):
+            raise ArtifactError(
+                f"env {key}={env_value!r} != artifact env_params {key}={meta_value!r}; "
+                "observation semantics would silently differ"
+            )
+
+    env_feature_columns = getattr(target, "feature_columns", None)
+    if env_feature_columns is None:
+        raise ArtifactError(
+            "env does not expose 'feature_columns'; cannot verify observation semantics"
+        )
+    if list(env_feature_columns) != list(meta.feature_columns):
+        raise ArtifactError(
+            f"env feature_columns {list(env_feature_columns)!r} != artifact "
+            f"feature_columns {meta.feature_columns!r}; observation semantics would silently differ"
+        )
+    if meta.portfolio_state_fields != DEFAULT_PORTFOLIO_STATE_FIELDS:
+        raise ArtifactError(
+            f"artifact portfolio_state_fields {meta.portfolio_state_fields!r} != "
+            f"environment layout {DEFAULT_PORTFOLIO_STATE_FIELDS!r}"
+        )
+    observation_space = getattr(target, "observation_space", None)
+    if observation_space is not None and observation_space.shape[0] != meta.observation_dim:
+        raise ArtifactError(
+            f"env observation dim {observation_space.shape[0]} != "
+            f"artifact observation_dim {meta.observation_dim}"
+        )
+    action_space = getattr(target, "action_space", None)
+    if action_space is not None and getattr(action_space, "n", None) != meta.action_space.get("n"):
+        raise ArtifactError(
+            f"env action space n={getattr(action_space, 'n', None)!r} != "
+            f"artifact action_space n={meta.action_space.get('n')!r}"
+        )
+
+
 def load_artifact(
-    artifact_dir: "str | Path", env: Any = None
+    artifact_dir: "str | Path",
+    env: Any = None,
+    *,
+    allow_legacy_semantics: bool = False,
 ) -> "tuple[Any, ArtifactMetadata]":
-    """metadata 검증 통과 후에만 SB3 모델을 로드한다."""
+    """metadata 검증 통과 후에만 SB3 모델을 로드한다.
+
+    v1 artifact는 기본 거부: 당일 기준 holding_duration_norm으로 학습된 모델이
+    고정 horizon 기준 observation(v2 env)을 받으면 차원이 같아도 입력 계약
+    위반이다. allow_legacy_semantics=True는 임시 진단 전용.
+    """
     artifact_dir = Path(artifact_dir)
     meta = load_metadata(artifact_dir)
+    meta_labels = meta.action_space.get("labels")
+    if meta_labels != EXPECTED_ACTION_LABELS:
+        raise ArtifactError(
+            f"artifact action labels {meta_labels!r} != environment contract "
+            f"{EXPECTED_ACTION_LABELS!r}; action semantics would silently differ"
+        )
+    if meta.artifact_format_version <= LEGACY_SEMANTICS_MAX_VERSION:
+        if not allow_legacy_semantics:
+            raise ArtifactError(
+                "legacy artifact (format v1) uses day-based holding_duration_norm; "
+                "observation semantics differ from the v2 environment. "
+                "Pass allow_legacy_semantics=True to run anyway (diagnostics only)."
+            )
+        import warnings
+
+        warnings.warn(
+            "running legacy (v1) artifact against v2 observation semantics",
+            UserWarning,
+            stacklevel=2,
+        )
+    else:
+        _check_env_compatibility(meta, env)
     if meta.algo != "PPO":
         raise ArtifactError(f"unsupported algo: {meta.algo}")
     if (

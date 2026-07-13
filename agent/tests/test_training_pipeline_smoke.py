@@ -82,6 +82,15 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
         model_kwargs={"n_steps": 8, "batch_size": 4, "verbose": 0},
     )
 
+    from models.artifact import load_metadata
+
+    meta = load_metadata(artifact_dir)
+    assert meta.artifact_format_version == 2
+    assert meta.env_params["episode_days"] >= 1
+    assert meta.env_params["duration_horizon_bars"] == (
+        meta.env_params["episode_days"] * 64
+    )
+
     env = build_training_environment(
         featured_data=featured_data,
         environment_config=config["environment"],

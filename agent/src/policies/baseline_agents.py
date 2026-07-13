@@ -13,7 +13,7 @@ SUPPORTED_BASELINES = ("buy_and_hold", "random", "ma_crossover")
 
 
 class BuyAndHoldAgent:
-    """Baseline that scales to full allocation, then holds until forced clear."""
+    """Baseline that scales to full allocation, then holds to the end."""
 
     def __init__(self, target_units: int = 5) -> None:
         if target_units <= 0:

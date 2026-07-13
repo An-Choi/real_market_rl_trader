@@ -50,12 +50,26 @@ class TradingEnvironment(gym.Env):
         benchmark_relative_rate: float = 0.0,
         reward_scale: float = 1.0,
         reward_return_mode: str = "simple_return",
+        episode_days: int = 1,
+        duration_horizon_bars: int | None = None,
+        nominal_bars_per_day: int = 64,
+        feature_schema_version: int | None = None,
     ) -> None:
         """Real-OHLCV intraday Unit-scaling environment.
 
         Discrete actions: 0=Hold, 1=Add 1 Unit, 2=Clear.
+        feature_schema_version: feature 계산 파이프라인의 schema version 선언 — artifact 호환성 검증용.
         """
         super().__init__()
+        if feature_schema_version is not None and (
+            isinstance(feature_schema_version, bool)
+            or not isinstance(feature_schema_version, int)
+            or feature_schema_version <= 0
+        ):
+            raise ValueError(
+                f"feature_schema_version must be a positive int or None: {feature_schema_version!r}"
+            )
+        self.feature_schema_version = feature_schema_version
         self.market_data = market_data.reset_index(drop=True)
         ts = pd.to_datetime(self.market_data["Timestamp"])
         self._date_groups = {
@@ -63,7 +77,32 @@ class TradingEnvironment(gym.Env):
             for d, grp in self.market_data.groupby(ts.dt.date).groups.items()
         }
         self._available_dates = sorted(self._date_groups.keys())
+        if isinstance(episode_days, bool) or not isinstance(episode_days, int) or episode_days <= 0:
+            raise ValueError(f"episode_days must be a positive int: {episode_days!r}")
+        self.episode_days = episode_days
+        if (
+            isinstance(nominal_bars_per_day, bool)
+            or not isinstance(nominal_bars_per_day, int)
+            or nominal_bars_per_day <= 0
+        ):
+            raise ValueError(
+                f"nominal_bars_per_day must be a positive int: {nominal_bars_per_day!r}"
+            )
+        self.nominal_bars_per_day = nominal_bars_per_day
+        if duration_horizon_bars is None:
+            duration_horizon_bars = episode_days * self.nominal_bars_per_day
+        if (
+            isinstance(duration_horizon_bars, bool)
+            or not isinstance(duration_horizon_bars, int)
+            or duration_horizon_bars <= 0
+        ):
+            raise ValueError(
+                f"duration_horizon_bars must be a positive int: {duration_horizon_bars!r}"
+            )
+        self.duration_horizon_bars = duration_horizon_bars
         self._active_date = None
+        self._episode_dates: list = []
+        self._day_start_offsets: np.ndarray | None = None
         self._active_index: np.ndarray | None = None
         self.feature_columns = feature_columns
         self.price_col = price_col
@@ -158,10 +197,6 @@ class TradingEnvironment(gym.Env):
         if not self.action_space.contains(action):
             raise ValueError(f"Invalid action: {action}")
 
-        n = len(self._active_index)
-        is_last = self.current_step >= n - 1
-        forced_clear = False
-
         previous_value = self.portfolio_value
         previous_peak_value = self.peak_portfolio_value
         execution_row = self._row_at(self.current_step)
@@ -175,8 +210,7 @@ class TradingEnvironment(gym.Env):
         else:
             execution = self._execute_trade(action)
 
-        if not is_last:
-            self.current_step += 1
+        self.current_step += 1
         self.portfolio_value = self._calculate_portfolio_value()
         valuation_row = self._row_at(self.current_step)
         current_market_price = float(valuation_row[self.price_col])
@@ -190,10 +224,8 @@ class TradingEnvironment(gym.Env):
             trade_value=execution.trade_value,
         )
         self.peak_portfolio_value = max(previous_peak_value, self.portfolio_value)
-        reward = reward_terms.reward
 
-        terminated = is_last
-        truncated = False
+        truncated = self.current_step >= len(self._active_index) - 1
         info = {
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
@@ -212,10 +244,32 @@ class TradingEnvironment(gym.Env):
             "drawdown_penalty": reward_terms.drawdown_penalty,
             "downside_penalty": reward_terms.downside_penalty,
         }
-        return self._get_observation(), reward, terminated, truncated, info
+        return self._get_observation(), reward_terms.reward, False, truncated, info
+
+    def estimate_liquidation_cost(self) -> float:
+        """현재 보유분을 현재 bar에 가상 매도할 때의 friction (metrics 정산용).
+
+        실제 거래·reward에는 쓰지 않는다 — 평가 회계 전용.
+        """
+        price = float(self._row_at(self.current_step)[self.price_col])
+        held_value = self._held_market_value(price)
+        if held_value <= 0:
+            return 0.0
+        return self.friction_model.calculate_total_friction(
+            trade_value=held_value,
+            side="sell",
+            liquidity_score=self._current_liquidity_score(),
+        )
 
     def _get_observation(self) -> np.ndarray:
-        """Observation = features + Unit portfolio state (4)."""
+        """Observation = features + Unit portfolio state (4).
+
+        holding_duration_norm은 고정 horizon(duration_horizon_bars) 기준 —
+        runtime episode 길이와 무관해 학습/평가/서빙에서 동일 스케일(causal).
+        tod_frac은 당일 기준, 분모는 그날 실제 bar 수가 아닌 고정 상수
+        nominal_bars_per_day — 당일 뒤쪽 bar 결손 여부(미래 정보)에 의존하지
+        않는다(causal).
+        """
         row = self._row_at(self.current_step)
         features = (
             pd.to_numeric(row[self.feature_columns], errors="coerce")
@@ -223,13 +277,14 @@ class TradingEnvironment(gym.Env):
             .to_numpy(dtype=np.float32)
         )
         price = float(row[self.price_col])
-        n = len(self._active_index)
         units_held_frac = self.units_held / max(self.max_units, 1)
         held_value = self._held_market_value(price)
         cost_basis = self.units_held * self.initial_cash * self.unit_fraction
         unrealized_pnl_norm = (held_value - cost_basis) / max(self.initial_cash, 1e-9)
         if self.units_held > 0 and self.entry_step is not None:
-            holding_duration_norm = (self.current_step - self.entry_step) / max(n - 1, 1)
+            holding_duration_norm = min(
+                (self.current_step - self.entry_step) / self.duration_horizon_bars, 1.0
+            )
         else:
             holding_duration_norm = 0.0
         global_idx = int(self._active_index[self.current_step])

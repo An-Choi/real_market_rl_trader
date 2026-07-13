@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from env.trading_env import TradingEnvironment
+from evaluation.metrics import summarize_backtest
 from policies.evaluation import BacktestEngine
 
 
@@ -14,14 +16,12 @@ class HoldAgent:
 
 def _three_day_data() -> pd.DataFrame:
     frames = []
-    for day in ("2025-06-02", "2025-06-03", "2025-06-04"):
-        timestamps = pd.date_range(
-            f"{day} 09:00", periods=4, freq="5min", tz="Asia/Seoul"
-        )
+    for d in pd.bdate_range("2025-06-02", periods=n_days):
+        ts = pd.date_range(f"{d.date()} 09:00", periods=bars, freq="5min", tz="Asia/Seoul")
         frames.append(pd.DataFrame({
-            "Timestamp": timestamps,
-            "Close": np.array([100.0, 101.0, 102.0, 103.0]),
-            "feature": np.zeros(4),
+            "Timestamp": ts,
+            "Close": np.full(bars, price),
+            "feature": np.zeros(bars),
         }))
     return pd.concat(frames, ignore_index=True)
 
@@ -31,8 +31,24 @@ def test_backtest_engine_evaluates_every_split_date() -> None:
         market_data=_three_day_data(),
         feature_columns=["feature"],
     )
+    assert engine.terminal_liquidation_cost == pytest.approx(expected_cost)
+    metrics = summarize_backtest(
+        results,
+        initial_value=engine.reset_info["portfolio_value"],
+        terminal_liquidation_cost=engine.terminal_liquidation_cost,
+    )
+    settled = results["portfolio_value"].iloc[-1] - expected_cost
+    assert metrics["final_portfolio_value"] == pytest.approx(settled)
+    assert metrics["open_at_end"] == 1.0
 
-    results = BacktestEngine(HoldAgent(), environment).run(max_steps=2, seed=7)
+
+def test_clear_before_end_has_zero_settlement() -> None:
+    data = _data(n_days=1, bars=4)  # 3 steps: Add, Hold, Clear(마지막 실행 bar)
+    engine = BacktestEngine(ClearAtStepAgent(clear_step=2), _env(data))
+    results = engine.run(seed=0)
+    assert results["units_held"].iloc[-1] == 0
+    assert engine.terminal_liquidation_cost == 0.0
+
 
     assert results["episode"].nunique() == 3
     assert results.groupby("episode").size().tolist() == [2, 2, 2]
