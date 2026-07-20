@@ -1,5 +1,5 @@
 agent:
-  type: baseline
+  type: rl
   baseline_name: moving_average_crossover
-  rl_model_name: PPO
-  total_timesteps: 10000
+  rl_model_name: MaskablePPO
+  total_timesteps: 300000

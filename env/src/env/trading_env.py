@@ -197,6 +197,22 @@ class TradingEnvironment(gym.Env):
         """Trading dates available for deterministic full-split evaluation."""
         return tuple(self._available_dates)
 
+    def action_masks(self) -> np.ndarray:
+        """Return actions that can change or preserve the current position.
+
+        Hold is always valid. Add is invalid at maximum allocation and Clear is
+        invalid while flat. Mask-aware policies avoid learning from duplicate
+        no-op actions without changing the public three-action contract.
+        """
+        return np.array(
+            [
+                True,
+                self.units_held < self.max_units,
+                self.units_held > 0,
+            ],
+            dtype=bool,
+        )
+
     def _row_at(self, local_step: int) -> pd.Series:
         """Map a local (within-day) step to the global market row."""
         global_idx = int(self._active_index[local_step])

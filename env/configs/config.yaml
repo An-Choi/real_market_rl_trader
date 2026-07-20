@@ -16,9 +16,11 @@ environment:
   nominal_bars_per_day: 64    # duration_horizon_bars = episode_days * nominal_bars_per_day
   risk_penalty_rate: 0.0
   turnover_penalty_rate: 0.0
-  drawdown_penalty_rate: 0.05
-  downside_penalty_rate: 0.10
-  benchmark_relative_rate: 0.05
+  # Primary objective: friction-adjusted compounded portfolio growth.
+  # Risk and benchmark shaping stay available for explicit ablation runs.
+  drawdown_penalty_rate: 0.0
+  downside_penalty_rate: 0.0
+  benchmark_relative_rate: 0.0
   reward_scale: 100.0
   reward_return_mode: log_return
   action_space:
@@ -34,9 +36,9 @@ friction:
   sell_tax_rate: 0.002   # 코스피 매도 거래세(증권거래세 0.05% + 농어촌특별세 0.15%, 2026년)
 
 agent:
-  type: baseline
+  type: rl
   baseline_name: buy_and_hold
-  rl_model_name: PPO
+  rl_model_name: MaskablePPO
   total_timesteps: 300000
   normalization:
     enabled: true
@@ -44,14 +46,20 @@ agent:
   tensorboard:
     enabled: true
     log_dir: runs/tensorboard
-    log_name: ppo_005930
+    log_name: maskable_ppo_005930
+  validation:
+    enabled: true
+    eval_freq: 25000
+    deterministic: true
+    seed: 42
+    verbose: 1
   ppo:
     learning_rate: 0.0003
     n_steps: 2048
     batch_size: 256
     n_epochs: 10
-    gamma: 0.995
-    gae_lambda: 0.95
+    gamma: 0.999
+    gae_lambda: 0.98
     clip_range: 0.2
     ent_coef: 0.01
     vf_coef: 0.5

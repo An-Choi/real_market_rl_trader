@@ -28,12 +28,8 @@ class RLAgent:
     def build(self, env: Any) -> None:
         """Build the underlying Stable-Baselines3 model."""
         # TODO: Add model dispatch for A2C, DQN, and custom policies.
-        if self.model_name != "PPO":
-            raise NotImplementedError(f"Model is not wired yet: {self.model_name}")
-
-        from stable_baselines3 import PPO
-
-        self.model = PPO(self.policy, env, **self.model_kwargs)
+        model_class = self._model_class()
+        self.model = model_class(self.policy, env, **self.model_kwargs)
 
     def train(
         self,
@@ -54,9 +50,14 @@ class RLAgent:
             learn_kwargs["callback"] = callback
         self.model.learn(**learn_kwargs)
 
-    def predict(self, observation: Any, deterministic: bool = True) -> tuple[int, Any]:
+    def predict(
+        self,
+        observation: Any,
+        deterministic: bool = True,
+        *,
+        action_masks: Any | None = None,
+    ) -> tuple[int, Any]:
         """Predict an action from an observation."""
-        # TODO: Add action masking or risk controls before live use.
         if self.model is None:
             raise RuntimeError("RL model has not been built or loaded.")
         model_observation = (
@@ -64,7 +65,12 @@ class RLAgent:
             if self.observation_normalizer is not None
             else observation
         )
-        action, state = self.model.predict(model_observation, deterministic=deterministic)
+        predict_kwargs: dict[str, Any] = {"deterministic": deterministic}
+        if self.model_name == "MaskablePPO":
+            if action_masks is None:
+                action_masks = self._mask_from_observation(model_observation)
+            predict_kwargs["action_masks"] = action_masks
+        action, state = self.model.predict(model_observation, **predict_kwargs)
         return int(action), state
 
     def save(self, path: str | Path) -> None:
@@ -76,13 +82,36 @@ class RLAgent:
 
     def load(self, path: str | Path, env: Any | None = None) -> None:
         """Load a model from disk."""
-        # TODO: Restore the correct model class from metadata.
-        if self.model_name != "PPO":
-            raise NotImplementedError(f"Model is not wired yet: {self.model_name}")
+        self.model = self._model_class().load(path, env=env)
 
-        from stable_baselines3 import PPO
+    def _model_class(self) -> Any:
+        if self.model_name == "PPO":
+            from stable_baselines3 import PPO
 
-        self.model = PPO.load(path, env=env)
+            return PPO
+        if self.model_name == "MaskablePPO":
+            from sb3_contrib import MaskablePPO
+
+            return MaskablePPO
+        raise NotImplementedError(f"Model is not wired yet: {self.model_name}")
+
+    @staticmethod
+    def _mask_from_observation(observation: Any) -> Any:
+        """Derive the mask from the unnormalized units-held portfolio field."""
+        import numpy as np
+
+        values = np.asarray(observation)
+        if values.shape[-1] < 4:
+            raise ValueError("observation is missing the four portfolio state fields")
+        units_held_frac = values[..., -4]
+        return np.stack(
+            (
+                np.ones_like(units_held_frac, dtype=bool),
+                units_held_frac < 1.0 - 1e-6,
+                units_held_frac > 1e-6,
+            ),
+            axis=-1,
+        )
 
 
 def make_rl_agent(

@@ -9,7 +9,7 @@ policy-learning and evaluation loop for adaptive single-symbol position control.
 ## Problem Definition
 
 - Task: sequential position lifecycle control for one symbol.
-- Policy: single shared PPO policy.
+- Policy: single shared MaskablePPO policy.
 - Observation: multi-timeframe features plus portfolio state.
 - Action space:
   - `0`: Hold
@@ -17,8 +17,10 @@ policy-learning and evaluation loop for adaptive single-symbol position control.
   - `2`: Clear Position
 - Position sizing: fixed unit scaling, 1 Unit = 20% of initial cash, max 5 Units.
 - Episode: configurable contiguous trading-day window (`environment.episode_days`).
-  The current default experiment uses 20 trading days and forces flat only at
-  the final bar of the window, so overnight price gaps are included.
+  The current default uses 20 trading days, carries positions overnight, and
+  treats the artificial window boundary as truncation. Evaluation subtracts a
+  virtual liquidation cost at the end of the selected split.
+- Invalid actions: Clear is masked while flat and Add is masked at max units.
 
 ## Current Workflow
 
@@ -29,7 +31,8 @@ conda activate rl-trader-py310
 python scripts/backfill.py --symbols 005930 --skip-daily
 ```
 
-Train PPO on the train split:
+Train MaskablePPO on the train split and select the saved parameters on the
+full validation split:
 
 ```bash
 python experiments/train.py --symbol 005930 --split train --total-timesteps 300000
@@ -54,6 +57,9 @@ TensorBoard logging is enabled by default in `env/configs/config.yaml`. Override
 per run with `--tensorboard-log-dir <dir>`, `--tensorboard-log-name <name>`, or
 disable it with `--no-tensorboard`.
 
+Validation selection is enabled by default and runs every 25,000 steps plus at
+step zero and training end. Disable only for diagnostics with `--no-validation`.
+
 Custom training charts are grouped under:
 
 - `returns/*`: current/completed episode return, compounded strategy return,
@@ -74,16 +80,16 @@ Backtest baselines on the test split:
 python experiments/backtest.py --compare-baselines --split test
 ```
 
-Compare PPO artifact against baselines:
+Compare a MaskablePPO artifact against baselines:
 
 ```bash
-python experiments/backtest.py --compare-baselines --artifact artifacts/ppo-fs2-... --split test
+python experiments/backtest.py --compare-baselines --artifact artifacts/maskableppo-fs2-... --split test
 ```
 
 Run multi-seed robustness:
 
 ```bash
-python experiments/backtest.py --compare-baselines --artifact artifacts/ppo-fs2-... --split test --seeds 1,2,3
+python experiments/backtest.py --compare-baselines --artifact artifacts/maskableppo-fs2-... --split test --seeds 1,2,3
 ```
 
 ## Splits
@@ -102,14 +108,13 @@ Default CLI behavior:
 - `train.py`: `--split train`
 - `backtest.py`: `--split test`
 
-Validation should be used for choosing reward penalties and basic PPO settings.
-Test should be used only for final out-of-sample comparison.
+Validation chooses the saved training checkpoint and experiment settings. Test
+must remain untouched until the experiment is frozen and is used only for final
+out-of-sample comparison.
 
-Backtests evaluate non-overlapping episode windows in the selected split. Cash and
-positions carry across day boundaries inside each window, and metrics compound the
-window returns without treating reset boundaries as market returns. The final
-window may contain fewer days when the split length is not divisible by
-`environment.episode_days`.
+Backtests run the entire selected split as one continuous episode. Cash and
+positions carry across all date boundaries, and final metrics include virtual
+liquidation friction for any open position.
 
 ## Baselines
 
@@ -137,8 +142,8 @@ Backtest summaries currently include:
 - `trade_count`
 - `number_of_trades` compatibility alias
 - `turnover`
-- `forced_clear_count`
 - `evaluated_days`
+- `overnight_hold_rate`, `open_at_end`, `terminal_liquidation_cost`
 - `hold_action_rate`, `add_action_rate`, `clear_action_rate`
 
 For multi-seed runs, output includes:
@@ -152,12 +157,7 @@ For multi-seed runs, output includes:
 Default reward:
 
 ```text
-100 * (
-  log_portfolio_return
-  + 0.05 * (log_portfolio_return - log_market_return)
-  - 0.10 * downside_return
-  - 0.05 * incremental_drawdown
-)
+100 * log(portfolio_value_t / portfolio_value_t-1)
 ```
 
 All terms are logged separately for ablation. Inventory and turnover penalties
@@ -181,9 +181,9 @@ Config fields:
 environment:
   risk_penalty_rate: 0.0
   turnover_penalty_rate: 0.0
-  drawdown_penalty_rate: 0.05
-  downside_penalty_rate: 0.10
-  benchmark_relative_rate: 0.05
+  drawdown_penalty_rate: 0.0
+  downside_penalty_rate: 0.0
+  benchmark_relative_rate: 0.0
   reward_scale: 100.0
   reward_return_mode: log_return
 ```
@@ -203,14 +203,16 @@ test turnover or max drawdown worse.
 
 Start simple:
 
-- `MlpPolicy`
+- `MaskablePPO` with `MlpPolicy`
+- invalid-action masking while flat or at maximum allocation
 - training-split feature standardization with clipping; stats saved in each artifact
+- deterministic full-validation checkpoint selection by terminal return
 - no HRL
 - no portfolio allocation RL
 - no continuous action sizing
 - no transformer policy
 
-The first acceptable PPO result is not required to beat all baselines. It must:
+The first acceptable MaskablePPO result is not required to beat all baselines. It must:
 
 - train without crashing
 - save a loadable artifact
@@ -223,16 +225,16 @@ The first acceptable PPO result is not required to beat all baselines. It must:
 
 Minimum success:
 
-- PPO artifact trains and loads.
+- MaskablePPO artifact trains and loads.
 - Backtest runs on validation and test.
 - Baseline comparison prints JSON metrics.
 - Multi-seed evaluation prints mean and standard deviation.
 
 Research success:
 
-- PPO improves at least one risk-adjusted metric on validation.
-- PPO does not increase turnover excessively.
-- PPO does not worsen max drawdown materially versus baselines.
+- MaskablePPO improves at least one risk-adjusted metric on validation.
+- MaskablePPO does not increase turnover excessively.
+- MaskablePPO does not worsen max drawdown materially versus baselines.
 - Behavior is explainable from action sequences and reward terms.
 
 ## Current Commands To Keep Green
@@ -244,7 +246,8 @@ python -m pytest env/tests agent/tests -q
 
 Current smoke coverage includes:
 
-- synthetic PPO training and artifact roundtrip
+- synthetic PPO and MaskablePPO training with artifact roundtrip
+- full-validation best-checkpoint selection
 - backtest CLI on synthetic data
 - baseline comparison
 - PPO artifact comparison

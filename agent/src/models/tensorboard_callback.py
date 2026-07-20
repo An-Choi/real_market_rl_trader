@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import warnings
 from typing import Any
 
 import numpy as np
@@ -217,7 +218,13 @@ class TradingMetricsTensorBoardCallback(BaseCallback):
         for key, values in state.reward_terms.items():
             if values:
                 self._record(f"daily/reward_{key}_mean", float(np.mean(values)))
-        self.logger.dump(self.num_timesteps)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Tried to write empty key-value dict",
+                category=UserWarning,
+            )
+            self.logger.dump(self.num_timesteps)
 
     def _record(self, name: str, value: float) -> None:
         self.logger.record(name, float(value), exclude="stdout")

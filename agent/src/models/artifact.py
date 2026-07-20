@@ -354,7 +354,7 @@ def load_artifact(
         )
     else:
         _check_env_compatibility(meta, env)
-    if meta.algo != "PPO":
+    if meta.algo not in {"PPO", "MaskablePPO"}:
         raise ArtifactError(f"unsupported algo: {meta.algo}")
     if (
         meta.normalization is not None
@@ -397,6 +397,7 @@ def save_artifact(
     *,
     vecnormalize_path: "str | Path | None" = None,
     normalization_path: "str | Path | None" = None,
+    normalization_payload: str | bytes | None = None,
 ) -> Path:
     """검증 → temp 디렉토리에 전부 기록 → 성공 시에만 최종 경로로 rename.
 
@@ -407,17 +408,20 @@ def save_artifact(
         raise ArtifactError("agent has no built model to save")
 
     norm = metadata.normalization
-    if vecnormalize_path is not None and normalization_path is not None:
-        raise ArtifactError("provide only one normalization stats path")
+    if sum(
+        value is not None
+        for value in (vecnormalize_path, normalization_path, normalization_payload)
+    ) > 1:
+        raise ArtifactError("provide only one normalization stats source")
     stats_path = normalization_path or vecnormalize_path
-    if norm is None and stats_path is not None:
-        raise ArtifactError("normalization path given but metadata.normalization is null")
+    if norm is None and (stats_path is not None or normalization_payload is not None):
+        raise ArtifactError("normalization stats given but metadata.normalization is null")
     if norm is not None:
-        if stats_path is None:
+        if stats_path is None and normalization_payload is None:
             raise ArtifactError(
                 "metadata.normalization set but vecnormalize/normalization stats path missing"
             )
-        if not Path(stats_path).is_file():
+        if stats_path is not None and not Path(stats_path).is_file():
             raise ArtifactError(f"normalization file not found: {stats_path}")
 
     artifacts_dir = Path(artifacts_dir)
@@ -431,7 +435,13 @@ def save_artifact(
         tmp_dir.mkdir()
         agent.model.save(str(tmp_dir / MODEL_FILENAME))
         if norm is not None:
-            shutil.copy2(stats_path, tmp_dir / norm["file"])
+            normalization_file = tmp_dir / norm["file"]
+            if isinstance(normalization_payload, bytes):
+                normalization_file.write_bytes(normalization_payload)
+            elif isinstance(normalization_payload, str):
+                normalization_file.write_text(normalization_payload, encoding="utf-8")
+            else:
+                shutil.copy2(stats_path, normalization_file)
         payload = json.dumps(metadata.to_dict(), indent=2, ensure_ascii=False)
         (tmp_dir / METADATA_FILENAME).write_text(payload, encoding="utf-8")
         tmp_dir.rename(final_dir)

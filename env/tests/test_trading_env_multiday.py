@@ -127,6 +127,19 @@ def test_reset_info_has_initial_market_price() -> None:
     assert info["initial_market_price"] == 100.0
 
 
+def test_action_masks_remove_duplicate_no_op_actions() -> None:
+    env = make_env(_days(2, bars_per_day=8), episode_days=2)
+    env.reset(seed=0)
+    assert env.action_masks().tolist() == [True, True, False]
+
+    for _ in range(env.max_units):
+        env.step(1)
+    assert env.action_masks().tolist() == [True, False, True]
+
+    env.step(2)
+    assert env.action_masks().tolist() == [True, True, False]
+
+
 def _two_day_gap_data() -> pd.DataFrame:
     """day1 종가 100 고정, day2 시가부터 110 — overnight gap fixture."""
     frames = []
