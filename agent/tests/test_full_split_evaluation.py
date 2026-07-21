@@ -49,6 +49,7 @@ def _data(n_days: int = 3, bars: int = 4, price: float = 100.0) -> pd.DataFrame:
         frames.append(pd.DataFrame({
             "Timestamp": ts,
             "Close": np.full(bars, price),
+            "ExecPrice": np.full(bars, price),
             "feature": np.zeros(bars),
         }))
     return pd.concat(frames, ignore_index=True)

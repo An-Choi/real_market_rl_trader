@@ -90,7 +90,7 @@ def test_resample_does_not_cross_day_boundary() -> None:
     assert set(dates) == {pd.Timestamp("2025-06-02").date(), pd.Timestamp("2025-06-03").date()}
 
 
-from data.resample import fold_closing_auction
+from data.resample import split_closing_auction
 
 
 def _day_with_auction(
@@ -123,54 +123,57 @@ def _day_with_auction(
     return pd.concat([reg, auction], ignore_index=True)
 
 
-def test_fold_removes_auction_row() -> None:
+def test_split_separates_auction_rows() -> None:
     df = add_minute_trading_value(
         _day_with_auction("2025-06-02", regular_close=100.0, auction_close=101.0,
                           auction_volume=5000, auction_tv_delta=505000)
     )
-    out = fold_closing_auction(df)
-    times = pd.to_datetime(out["Timestamp"]).dt.strftime("%H:%M")
-    assert "15:30" not in set(times)  # 경매 row 제거
-    assert times.iloc[-1] == "15:19"  # 마지막 = 정규 종료봉
+    regular, auction = split_closing_auction(df)
+    reg_times = pd.to_datetime(regular["Timestamp"]).dt.strftime("%H:%M")
+    assert "15:30" not in set(reg_times)                       # 경매 row 분리됨
+    assert reg_times.iloc[-1] == "15:19"                       # 정규봉 그대로 유지
+    assert regular.iloc[-1]["Close"] == 100.0                  # 경매가 미오염
+    assert len(auction) == 1
+    assert auction.iloc[0]["Close"] == 101.0
 
 
-def test_fold_sets_terminal_close_to_auction() -> None:
-    df = add_minute_trading_value(
-        _day_with_auction("2025-06-02", regular_close=100.0, auction_close=101.0,
-                          auction_volume=5000, auction_tv_delta=505000)
-    )
-    out = fold_closing_auction(df)
-    last = out.iloc[-1]
-    assert last["Close"] == 101.0  # 종가 = 경매가
-
-
-def test_fold_adds_auction_volume_and_tradingvalue() -> None:
-    df = add_minute_trading_value(
-        _day_with_auction("2025-06-02", regular_close=100.0, auction_close=101.0,
-                          auction_volume=5000, auction_tv_delta=505000)
-    )
-    before_last_vol = df[pd.to_datetime(df["Timestamp"]).dt.strftime("%H:%M") == "15:19"].iloc[0]["Volume"]
-    out = fold_closing_auction(df)
-    last = out.iloc[-1]
-    assert last["Volume"] == before_last_vol + 5000  # 경매 거래량 합산
-    assert last["MinuteTradingValue"] == 1000 + 505000  # 15:19 diff(1000) + 경매 delta
-
-
-def test_fold_day_without_auction_unchanged() -> None:
-    # 15:30 print 없는 날은 그대로.
+def test_split_day_without_auction() -> None:
     df = add_minute_trading_value(_minute_day("2025-06-02", [float(i) for i in range(10)]))
-    out = fold_closing_auction(df)
-    pd.testing.assert_frame_equal(out.reset_index(drop=True), df.reset_index(drop=True))
+    regular, auction = split_closing_auction(df)
+    pd.testing.assert_frame_equal(regular.reset_index(drop=True), df.reset_index(drop=True))
+    assert auction.empty
 
 
-def test_resample_5min_terminal_bar_reflects_auction() -> None:
-    # fold 후 resample하면 마지막 5분 bar(15:20 라벨)의 Close가 경매가.
+def test_split_handles_shifted_market_hours() -> None:
+    # 수능일: 정규장 1시간 순연 → 마지막 정규봉 16:19, 경매 16:30.
+    end_regular = pd.Timestamp("2025-11-13 16:19", tz="Asia/Seoul")
+    reg_ts = pd.date_range(end=end_regular, periods=20, freq="1min")
+    cum_tv = np.arange(1, 21, dtype="int64") * 1000
+    reg = pd.DataFrame({
+        "Timestamp": reg_ts, "Open": 100.0, "High": 100.0, "Low": 100.0,
+        "Close": 100.0, "Volume": 100, "TradingValue": cum_tv,
+    })
+    auction = pd.DataFrame({
+        "Timestamp": [pd.Timestamp("2025-11-13 16:30", tz="Asia/Seoul")],
+        "Open": [102.0], "High": [102.0], "Low": [102.0], "Close": [102.0],
+        "Volume": [5000], "TradingValue": [int(cum_tv[-1]) + 505000],
+    })
+    df = add_minute_trading_value(pd.concat([reg, auction], ignore_index=True))
+
+    regular, auction_out = split_closing_auction(df)
+
+    assert pd.to_datetime(regular["Timestamp"]).dt.strftime("%H:%M").iloc[-1] == "16:19"
+    assert auction_out.iloc[0]["Close"] == 102.0
+
+
+def test_resample_terminal_bar_excludes_auction() -> None:
+    # split 후 resample하면 마지막 5분 bar(15:20 라벨)의 Close는 15:19 정규 종가.
     df = add_minute_trading_value(
         _day_with_auction("2025-06-02", regular_close=100.0, auction_close=101.0,
                           auction_volume=5000, auction_tv_delta=505000)
     )
-    folded = fold_closing_auction(df)
-    bars = resample_5min(folded)
+    regular, _ = split_closing_auction(df)
+    bars = resample_5min(regular)
     last = bars.iloc[-1]
     assert pd.to_datetime(last["Timestamp"]).strftime("%H:%M") == "15:20"
-    assert last["Close"] == 101.0  # 경매 종가가 terminal 5분 bar에 반영
+    assert last["Close"] == 100.0                              # 경매가 없는 순수 정규 종가

@@ -22,55 +22,44 @@ def add_minute_trading_value(minute_df: pd.DataFrame, ts_col: str = "Timestamp")
     return out
 
 
-def _fold_one_day(day_df: pd.DataFrame, ts_col: str) -> pd.DataFrame:
-    """거래일 내 종가 동시호가 print를 마지막 정규봉에 접어 넣는다.
+def _split_one_day(day_df: pd.DataFrame, ts_col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """거래일 내 종가 동시호가 print를 정규봉과 분리한다.
 
-    15:19 이후 >1분 gap 뒤에 찍힌 봉(들)을 종가 동시호가로 보고, 그 Close를
-    마지막 정규봉의 Close로, Volume/MinuteTradingValue를 합산, High/Low를 갱신한 뒤
-    경매 row(들)를 제거한다. 경매 print가 없으면 원본 그대로.
+    15:19 이후 >1분 gap 뒤에 찍힌 봉(들)을 종가 동시호가로 본다(수능일처럼
+    장시간이 순연된 날도 gap 기준이라 동일하게 동작). 경매 print가 없으면
+    (원본, 빈 프레임).
     """
     day = day_df.sort_values(ts_col).reset_index(drop=True)
     ts = pd.to_datetime(day[ts_col])
     gap = ts.diff()
-    # 경매 후보: 이전 봉과 >1분 gap이면서 이전 봉이 15:19 이후.
     prev_ts = ts.shift(1)
     prev_after_auction = prev_ts.apply(
         lambda t: pd.notna(t) and t.time() >= _AUCTION_GAP_START
     )
     is_auction = (gap > pd.Timedelta(minutes=1)) & prev_after_auction
     if not is_auction.any():
-        return day
+        return day, day.iloc[0:0]
 
     first_auction = is_auction.idxmax()  # 첫 True 위치
-    auction = day.iloc[first_auction:]
-    regular = day.iloc[:first_auction].copy()
+    regular = day.iloc[:first_auction]
     if regular.empty:
-        return day  # 방어: 정규봉이 없으면 접지 않음
-
-    last = regular.index[-1]
-    regular.loc[last, "Close"] = auction["Close"].iloc[-1]
-    regular.loc[last, "High"] = max(regular.loc[last, "High"], auction["High"].max())
-    regular.loc[last, "Low"] = min(regular.loc[last, "Low"], auction["Low"].min())
-    regular.loc[last, "Volume"] = regular.loc[last, "Volume"] + auction["Volume"].sum()
-    if "MinuteTradingValue" in regular.columns:
-        regular.loc[last, "MinuteTradingValue"] = (
-            regular.loc[last, "MinuteTradingValue"] + auction["MinuteTradingValue"].sum()
-        )
-    return regular
+        return day, day.iloc[0:0]  # 방어: 정규봉이 없으면 분리하지 않음
+    return regular, day.iloc[first_auction:]
 
 
-def fold_closing_auction(minute_df: pd.DataFrame, ts_col: str = "Timestamp") -> pd.DataFrame:
-    """종가 동시호가(15:30) print를 거래일별로 마지막 정규봉에 fold-in.
+def split_closing_auction(
+    minute_df: pd.DataFrame, ts_col: str = "Timestamp"
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """거래일별로 (정규봉, 종가 동시호가 print)를 분리해 반환한다.
 
-    resample 이전 단계. add_minute_trading_value 이후에 호출해야 경매 거래대금이
-    MinuteTradingValue로 합산된다. 입력 미변경(copy 반환).
+    경매 가격은 관찰(feature)에 넣으면 lookahead가 되므로 정규봉만 resample로
+    보내고, 경매 print는 실행 전용(ExecPrice) 데이터로 쓴다. 입력 미변경.
     """
     ts = pd.to_datetime(minute_df[ts_col])
-    frames = [
-        _fold_one_day(grp, ts_col)
-        for _, grp in minute_df.groupby(ts.dt.date)
-    ]
-    return pd.concat(frames, ignore_index=True)
+    parts = [_split_one_day(grp, ts_col) for _, grp in minute_df.groupby(ts.dt.date)]
+    regular = pd.concat([r for r, _ in parts], ignore_index=True)
+    auction = pd.concat([a for _, a in parts], ignore_index=True)
+    return regular, auction
 
 
 _AGG_5MIN = {

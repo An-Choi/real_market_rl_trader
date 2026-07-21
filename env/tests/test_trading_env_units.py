@@ -16,6 +16,7 @@ def flat_data() -> pd.DataFrame:
         {
             "Timestamp": ts,
             "Close": np.full(n, 100.0),
+            "ExecPrice": np.full(n, 100.0),
             "ma_5": np.full(n, 100.0),
         }
     )
@@ -39,11 +40,65 @@ def test_add_increments_units(flat_data: pd.DataFrame) -> None:
 
 
 def test_add_caps_at_max_units(flat_data: pd.DataFrame) -> None:
-    env = make_env(flat_data)
+    # friction 0으로 두면 5 Unit = 자본 100%가 정확히 도달 가능 (cash 0).
+    from friction.friction_model import FrictionModel
+
+    env = TradingEnvironment(
+        market_data=flat_data, feature_columns=["ma_5"],
+        initial_cash=10_000.0, unit_fraction=0.20, max_units=5,
+        friction_model=FrictionModel(fee_rate=0.0, spread_rate=0.0,
+                                     slippage_rate=0.0, sell_tax_rate=0.0),
+    )
     env.reset(seed=0)
     for _ in range(7):  # 5번이면 max, 이후 no-op
         _, _, _, _, info = env.step(1)
     assert info["units_held"] == 5
+    assert env.cash == pytest.approx(0.0)
+
+
+def test_add_blocked_when_cash_insufficient(flat_data: pd.DataFrame) -> None:
+    """현금 게이트: friction 포함 매수 비용을 감당 못 하면 Add는 no-op."""
+    env = make_env(flat_data)  # 기본 friction: 매수 0.2% = 4원/Unit
+    env.reset(seed=0)
+    for _ in range(7):
+        _, _, _, _, info = env.step(1)
+    # 4번 매수 후 cash = 10,000 − 4×2,004 = 1,984 < 2,004 → 5번째 차단
+    assert info["units_held"] == 4
+    assert env.cash >= 0.0
+
+
+def test_action_mask_reflects_cash_gate(flat_data: pd.DataFrame) -> None:
+    env = make_env(flat_data)
+    env.reset(seed=0)
+    for _ in range(4):
+        env.step(1)
+    # units(4) < max(5)지만 현금 부족 → Add 마스크 False
+    assert env.action_masks().tolist() == [True, False, True]
+
+
+def test_cash_never_negative_under_random_actions(flat_data: pd.DataFrame) -> None:
+    """불변식: 어떤 행동 시퀀스에서도 cash ≥ 0."""
+    rng = np.random.default_rng(3)
+    env = make_env(flat_data)
+    env.reset(seed=3)
+    for _ in range(9):
+        _, _, terminated, truncated, _ = env.step(int(rng.integers(0, 3)))
+        assert env.cash >= 0.0
+        if terminated or truncated:
+            break
+
+
+def test_unit_fraction_199_reaches_max_units_with_friction(flat_data: pd.DataFrame) -> None:
+    """config 기본값 0.199는 friction을 내고도 5 Unit 도달이 가능해야 한다."""
+    env = TradingEnvironment(
+        market_data=flat_data, feature_columns=["ma_5"],
+        initial_cash=10_000.0, unit_fraction=0.199, max_units=5,
+    )
+    env.reset(seed=0)
+    for _ in range(5):
+        _, _, _, _, info = env.step(1)
+    assert info["units_held"] == 5
+    assert env.cash >= 0.0
 
 
 def test_clear_zeroes_units(flat_data: pd.DataFrame) -> None:
@@ -103,6 +158,7 @@ def test_multi_add_mark_to_market_uses_actual_shares() -> None:
         {
             "Timestamp": ts,
             "Close": prices,
+            "ExecPrice": prices,
             "ma_5": prices,
         }
     )
@@ -135,7 +191,7 @@ def test_clear_realizes_mark_to_market_proceeds() -> None:
     """
     prices = [100.0, 110.0, 110.0]
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
-    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ma_5": prices})
+    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ExecPrice": prices, "ma_5": prices})
     from friction.friction_model import FrictionModel
 
     env = TradingEnvironment(
@@ -164,7 +220,7 @@ def test_clear_sell_tax_on_market_proceeds() -> None:
     """
     prices = [100.0, 110.0, 110.0]
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
-    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ma_5": prices})
+    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ExecPrice": prices, "ma_5": prices})
     from friction.friction_model import FrictionModel
 
     sell_tax_rate = 0.002
@@ -192,7 +248,7 @@ def test_last_executable_bar_add_executes() -> None:
     """
     prices = [100.0, 101.0, 102.0]
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
-    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ma_5": prices})
+    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ExecPrice": prices, "ma_5": prices})
 
     env = TradingEnvironment(
         market_data=data,

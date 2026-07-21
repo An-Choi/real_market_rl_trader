@@ -23,7 +23,7 @@ def _featured_data(start: str, n_days: int) -> pd.DataFrame:
         )
         closes = price + np.linspace(0.0, 1.0, len(timestamps))
         price = float(closes[-1])
-        frame = pd.DataFrame({"Timestamp": timestamps, "Close": closes})
+        frame = pd.DataFrame({"Timestamp": timestamps, "Close": closes, "ExecPrice": closes})
         for index, column in enumerate(FeatureEngineer.FEATURE_COLUMNS):
             frame[column] = np.linspace(0.0, 0.1 + index * 0.01, len(frame))
         frames.append(frame)

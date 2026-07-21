@@ -16,6 +16,7 @@ def _days(n_days: int, bars_per_day: int = 3, start: str = "2025-06-02") -> pd.D
         frames.append(pd.DataFrame({
             "Timestamp": ts,
             "Close": np.full(bars_per_day, 100.0),
+            "ExecPrice": np.full(bars_per_day, 100.0),
             "ma_5": np.full(bars_per_day, 100.0),
         }))
     return pd.concat(frames, ignore_index=True)
@@ -148,6 +149,7 @@ def _two_day_gap_data() -> pd.DataFrame:
         frames.append(pd.DataFrame({
             "Timestamp": ts,
             "Close": np.full(3, price),
+            "ExecPrice": np.full(3, price),
             "ma_5": np.full(3, price),
         }))
     return pd.concat(frames, ignore_index=True)

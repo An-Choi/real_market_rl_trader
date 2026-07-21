@@ -18,6 +18,7 @@ def two_day_data() -> pd.DataFrame:
                 {
                     "Timestamp": ts,
                     "Close": np.array([100.0, 101.0, 102.0, 103.0, 104.0]),
+                    "ExecPrice": np.array([100.0, 101.0, 102.0, 103.0, 104.0]),
                     "ma_5": np.full(5, 100.0),
                 }
             )

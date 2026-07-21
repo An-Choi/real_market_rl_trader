@@ -40,7 +40,9 @@ def test_build_creates_parquet(tmp_path: Path) -> None:
     v = FeatureEngineer.FEATURE_SCHEMA_VERSION
     cached = tmp_path / "processed" / "005930" / f"features_v{v}.parquet"
     assert cached.exists()
-    assert list(out.columns) == ["Timestamp", "Close"] + list(FeatureEngineer.FEATURE_COLUMNS)
+    assert list(out.columns) == (
+        ["Timestamp", "Close", "ExecPrice"] + list(FeatureEngineer.FEATURE_COLUMNS)
+    )
 
 
 def test_build_loads_existing(tmp_path: Path) -> None:

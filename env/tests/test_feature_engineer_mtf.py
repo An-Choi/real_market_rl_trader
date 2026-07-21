@@ -36,7 +36,7 @@ def test_feature_columns_frozen_order() -> None:
 
 def test_output_columns_and_no_nan() -> None:
     out = FeatureEngineer().transform(_minute_days(DAYS))
-    expected = ["Timestamp", "Close"] + list(FeatureEngineer.FEATURE_COLUMNS)
+    expected = ["Timestamp", "Close", "ExecPrice"] + list(FeatureEngineer.FEATURE_COLUMNS)
     assert list(out.columns) == expected
     assert not out[list(FeatureEngineer.FEATURE_COLUMNS)].isna().any().any()
 
@@ -55,6 +55,70 @@ def test_transform_does_not_mutate_self_or_input() -> None:
     _ = fe.transform(mdf)
     assert set(mdf.columns) == cols_before  # 입력 미변경
     assert not hasattr(fe, "feature_columns") or isinstance(fe.FEATURE_COLUMNS, tuple)
+
+
+def _minute_days_with_auction(days: list[str], auction_offset: float = 2.0) -> pd.DataFrame:
+    """정규봉 09:00~15:19(380분, Open=Close−0.3) + 15:30 종가 동시호가 1봉."""
+    frames = []
+    price = 100.0
+    rng = np.random.default_rng(0)
+    for d in days:
+        ts = pd.date_range(f"{d} 09:00", periods=380, freq="1min", tz="Asia/Seoul")
+        closes = price + np.cumsum(rng.normal(0, 0.2, 380))
+        price = float(closes[-1])
+        cum_tv = np.cumsum(rng.integers(1_000_000, 9_000_000, 380))
+        frames.append(pd.DataFrame({
+            "Timestamp": ts, "Open": closes - 0.3, "High": closes + 0.5,
+            "Low": closes - 0.5, "Close": closes,
+            "Volume": rng.integers(500, 5000, 380), "TradingValue": cum_tv,
+        }))
+        auction_price = price + auction_offset
+        frames.append(pd.DataFrame({
+            "Timestamp": [pd.Timestamp(f"{d} 15:30", tz="Asia/Seoul")],
+            "Open": [auction_price], "High": [auction_price], "Low": [auction_price],
+            "Close": [auction_price], "Volume": [9000],
+            "TradingValue": [int(cum_tv[-1]) + 900_000],
+        }))
+    return pd.concat(frames, ignore_index=True)
+
+
+def test_schema_version_bumped_for_exec_price() -> None:
+    assert FeatureEngineer.FEATURE_SCHEMA_VERSION == 3
+
+
+def test_exec_price_is_next_minute_open() -> None:
+    mdf = _minute_days_with_auction(DAYS)
+    out = FeatureEngineer().transform(mdf)
+    # 비말단 결정 시점: 라벨 T의 ExecPrice = 같은 날 T시각 1분봉의 Open (관찰 봉 Close와 다름)
+    row = out[pd.to_datetime(out["Timestamp"]).dt.strftime("%H:%M") == "11:05"].iloc[0]
+    label_ts = pd.Timestamp(row["Timestamp"])
+    minute_open = mdf.loc[pd.to_datetime(mdf["Timestamp"]) == label_ts, "Open"].iloc[0]
+    assert row["ExecPrice"] == minute_open
+    assert row["ExecPrice"] != row["Close"]  # same-bar Close 체결 금지
+
+
+def test_day_final_exec_price_is_auction_single_price() -> None:
+    mdf = _minute_days_with_auction(DAYS)
+    out = FeatureEngineer().transform(mdf)
+    dates = pd.to_datetime(out["Timestamp"]).dt.date
+    auction_ts = pd.to_datetime(mdf["Timestamp"])
+    for day, group in out.groupby(dates):
+        final = group.iloc[-1]
+        expected = mdf.loc[
+            (auction_ts.dt.date == day) & (auction_ts.dt.strftime("%H:%M") == "15:30"),
+            "Close",
+        ].iloc[0]
+        assert final["ExecPrice"] == expected            # 15:30 단일가 체결
+        assert final["Close"] != expected                # 관찰(Close)에는 경매가 미포함
+
+
+def test_day_without_auction_final_exec_price_is_nan() -> None:
+    # 경매 print도 다음 1분봉도 없는 날 말단은 NaN (env가 Close로 fallback).
+    out = FeatureEngineer().transform(_minute_days(DAYS))
+    dates = pd.to_datetime(out["Timestamp"]).dt.date
+    for _, group in out.groupby(dates):
+        assert pd.isna(group.iloc[-1]["ExecPrice"])          # 각 날 말단
+        assert group.iloc[:-1]["ExecPrice"].notna().all()    # 비말단은 항상 존재
 
 
 def test_future_bar_mutation_does_not_change_past_features() -> None:

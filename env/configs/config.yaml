@@ -10,7 +10,7 @@ data:
 
 environment:
   initial_cash: 10000.0
-  unit_fraction: 0.20
+  unit_fraction: 0.199  # friction 내고도 5 Unit 도달 가능하게 (0.20이면 수수료 4원 부족)
   max_units: 5
   episode_days: 20            # 학습 episode = 연속 20거래일
   nominal_bars_per_day: 64    # duration_horizon_bars = episode_days * nominal_bars_per_day
@@ -29,11 +29,19 @@ environment:
     2: Clear
 
 friction:
-  fee_rate: 0.001
-  spread_rate: 0.0005
-  slippage_rate: 0.0005
+  # 2026-07 실측·검증 기반 정밀 보정 (한투 API 기준):
+  # 수수료 = 뱅키스 0.0140527% + 유관기관 제비용 0.0036% ≈ 0.018%/side
+  fee_rate: 0.00018
+  # dynamic_spread: half-spread = 0.5 × KRX tick(price) / price
+  # (가격이 틱 경계 20만원을 넘나들어 정적 비율은 부정확). spread_rate는 fallback.
+  dynamic_spread: true
+  spread_rate: 0.001
+  # 소액 주문(수천 원 notional)은 삼성전자 최우선호가 잔량 대비 슬리피지 사실상 0
+  slippage_rate: 0.0
   execution_uncertainty_rate: 0.0
-  sell_tax_rate: 0.002   # 코스피 매도 거래세(증권거래세 0.05% + 농어촌특별세 0.15%, 2026년)
+  # 체결일 기준 세율 연혁 적용: 2025년 0.15% → 2026년~ 0.20%. sell_tax_rate는 fallback.
+  date_based_sell_tax: true
+  sell_tax_rate: 0.002
 
 agent:
   type: rl

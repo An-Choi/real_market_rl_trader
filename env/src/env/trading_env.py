@@ -38,6 +38,7 @@ class TradingEnvironment(gym.Env):
         market_data: pd.DataFrame,
         feature_columns: list[str],
         price_col: str = "Close",
+        exec_price_col: str = "ExecPrice",
         initial_cash: float = 10_000.0,
         unit_fraction: float = 0.20,
         max_units: int = 5,
@@ -69,6 +70,13 @@ class TradingEnvironment(gym.Env):
                 f"feature_schema_version must be a positive int or None: {feature_schema_version!r}"
             )
         self.feature_schema_version = feature_schema_version
+        if exec_price_col not in market_data.columns:
+            raise ValueError(
+                f"market_data missing execution price column {exec_price_col!r} — "
+                "same-bar Close 체결은 lookahead라 금지. feature 캐시를 schema v3로 "
+                "재생성하거나 픽스처에 ExecPrice를 추가하라."
+            )
+        self.exec_price_col = exec_price_col
         self.market_data = market_data.reset_index(drop=True)
         ts = pd.to_datetime(self.market_data["Timestamp"])
         self._date_groups = {
@@ -200,18 +208,56 @@ class TradingEnvironment(gym.Env):
     def action_masks(self) -> np.ndarray:
         """Return actions that can change or preserve the current position.
 
-        Hold is always valid. Add is invalid at maximum allocation and Clear is
-        invalid while flat. Mask-aware policies avoid learning from duplicate
-        no-op actions without changing the public three-action contract.
+        Hold is always valid. Add is invalid at maximum allocation **or when
+        cash cannot cover the buy notional plus friction** (cash ≥ 0 invariant
+        — 음수 현금은 무이자 레버리지라 금지). Clear is invalid while flat.
+        Mask-aware policies avoid learning from duplicate no-op actions without
+        changing the public three-action contract.
         """
         return np.array(
             [
                 True,
-                self.units_held < self.max_units,
+                self.units_held < self.max_units and self._can_afford_add(),
                 self.units_held > 0,
             ],
             dtype=bool,
         )
+
+    def _can_afford_add(
+        self, price: float | None = None, trade_date=None
+    ) -> bool:
+        """1 Unit 매수(고정 notional + 매수 friction)를 현금으로 감당 가능한가.
+
+        매수 현금 유출은 고정 notional이라 가격은 friction의 스프레드 비율에만
+        관여한다. mask 경로는 인자 없이 호출되어 **관찰된 봉**의 Close·날짜로
+        추정(causal — 미래 정보 미사용), 체결부는 실제 체결가·체결일로 재확인.
+        """
+        row = self._row_at(self.current_step)
+        if price is None:
+            price = float(row[self.price_col])
+        if trade_date is None:
+            trade_date = pd.Timestamp(row["Timestamp"]).date()
+        unit_notional = self.initial_cash * self.unit_fraction
+        buy_friction = self.friction_model.calculate_total_friction(
+            trade_value=unit_notional,
+            side="buy",
+            liquidity_score=self._current_liquidity_score(),
+            price=price,
+            trade_date=trade_date,
+        )
+        return self.cash >= unit_notional + buy_friction
+
+    def _execution_price(self, local_step: int) -> float:
+        """시장가 주문 근사 체결가: ExecPrice(라벨 이후 첫 1분봉 Open/동시호가 단일가).
+
+        NaN이면(경매 print도 다음 1분봉도 없는 말단) 관찰 봉 Close로 fallback —
+        발생 빈도는 극소수(수집 결손일)라 회계 왜곡은 무시 가능 수준.
+        """
+        row = self._row_at(local_step)
+        exec_price = float(row[self.exec_price_col])
+        if np.isfinite(exec_price):
+            return exec_price
+        return float(row[self.price_col])
 
     def _row_at(self, local_step: int) -> pd.Series:
         """Map a local (within-day) step to the global market row."""
@@ -278,7 +324,7 @@ class TradingEnvironment(gym.Env):
 
         실제 거래·reward에는 쓰지 않는다 — 평가 회계 전용.
         """
-        price = float(self._row_at(self.current_step)[self.price_col])
+        price = self._execution_price(self.current_step)
         held_value = self._held_market_value(price)
         if held_value <= 0:
             return 0.0
@@ -286,6 +332,8 @@ class TradingEnvironment(gym.Env):
             trade_value=held_value,
             side="sell",
             liquidity_score=self._current_liquidity_score(),
+            price=price,
+            trade_date=pd.Timestamp(self._row_at(self.current_step)["Timestamp"]).date(),
         )
 
     def _get_observation(self) -> np.ndarray:
@@ -357,18 +405,27 @@ class TradingEnvironment(gym.Env):
         )
 
     def _execute_trade(self, action: int) -> TradeExecution:
-        """Execute a Unit-scaling trade at the current real Close.
+        """Execute a Unit-scaling trade at the next tradable price (ExecPrice).
 
-        보유분은 실제 주식수(`shares_held`)로 추적한다. 매수는 1 Unit = 고정
-        notional만큼 현금을 쓰고 `notional/price`주를 취득, 매도는 보유 주식을
-        현재가로 현금화한다. 거래비용(거래세 포함)은 실제 거래 현금흐름
-        (`trade_value`) 기준으로 부과된다.
+        체결가는 관찰 봉의 Close가 아니라 결정 시점 이후 첫 체결 가능 가격
+        (다음 1분봉 Open, 장 마감 결정은 15:30 동시호가 단일가) — 시장가 주문
+        시뮬레이션. 보유분은 실제 주식수(`shares_held`)로 추적한다. 매수는
+        1 Unit = 고정 notional만큼 현금을 쓰고 `notional/price`주를 취득,
+        매도는 보유 주식을 체결가로 현금화한다. 거래비용(거래세 포함)은 실제
+        거래 현금흐름(`trade_value`) 기준으로 부과된다.
         """
-        price = float(self._row_at(self.current_step)[self.price_col])
+        price = self._execution_price(self.current_step)
+        trade_date = pd.Timestamp(self._row_at(self.current_step)["Timestamp"]).date()
         target_units = self._action_to_target_units(action)
         unit_notional = self.initial_cash * self.unit_fraction
         prev_units = self.units_held
         delta_units = target_units - prev_units
+        if delta_units > 0 and not self._can_afford_add(price=price, trade_date=trade_date):
+            # 마스크를 안 쓰는 정책(PPO·baseline·random)의 방어선이자, 실제
+            # 체결가 기준 재확인(마스크는 관찰가 기준 추정): 현금 부족 Add는
+            # max-units Add와 동일하게 no-op — cash ≥ 0 불변식 유지.
+            target_units = prev_units
+            delta_units = 0
 
         if delta_units > 0:
             # 매수: 고정 notional 지출, shares 누적.
@@ -395,6 +452,8 @@ class TradingEnvironment(gym.Env):
                 trade_value=trade_value,
                 side=side,
                 liquidity_score=liquidity_score,
+                price=price,
+                trade_date=trade_date,
             )
             if delta_units != 0
             else 0.0
