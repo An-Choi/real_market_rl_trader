@@ -102,3 +102,7 @@ class NormalizedObservationEnv(gym.ObservationWrapper):
 
     def observation(self, observation: Any) -> np.ndarray:
         return self.normalizer.transform_observation(observation)
+
+    def action_masks(self) -> np.ndarray:
+        """Forward the base environment's invalid-action mask."""
+        return self.env.unwrapped.action_masks()

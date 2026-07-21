@@ -4,6 +4,7 @@ matplotlib
 pyyaml
 gymnasium
 stable-baselines3
+sb3-contrib
 tensorboard
 requests
 pyarrow

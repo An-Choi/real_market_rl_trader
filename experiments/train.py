@@ -1,4 +1,4 @@
-"""Train a PPO agent and save a versioned model artifact."""
+"""Train a configured RL agent and save a versioned model artifact."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _positive_int(value: str) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train PPO on prepared market data")
+    parser = argparse.ArgumentParser(description="Train an RL policy on prepared market data")
     parser.add_argument("--symbol", type=str, default=None)
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
@@ -60,7 +60,13 @@ def parse_args() -> argparse.Namespace:
         "--tensorboard-log-name",
         type=str,
         default=None,
-        help="TensorBoard run name passed to Stable-Baselines3.",
+        help="TensorBoard run name passed to the RL implementation.",
+    )
+    parser.add_argument(
+        "--validation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Select the saved model by deterministic full-validation return.",
     )
     return parser.parse_args()
 
@@ -76,10 +82,13 @@ def main() -> None:
     total_timesteps = args.total_timesteps or config["agent"]["total_timesteps"]
     seed = args.seed if args.seed is not None else config.get("seed", 42)
     tensorboard_config = config["agent"].setdefault("tensorboard", {})
+    validation_config = config["agent"].setdefault("validation", {})
     if args.tensorboard is not None:
         tensorboard_config["enabled"] = args.tensorboard
     if args.tensorboard_log_name is not None:
         tensorboard_config["log_name"] = args.tensorboard_log_name
+    if args.validation is not None:
+        validation_config["enabled"] = args.validation
     tensorboard_log_dir = None
     if args.tensorboard_log_dir is not None:
         tensorboard_log_dir = resolve_project_path(PROJECT_ROOT, args.tensorboard_log_dir)
@@ -90,12 +99,18 @@ def main() -> None:
         )
 
     data_loader = make_data_loader(project_root=PROJECT_ROOT, config=config)
-    featured_data = load_feature_data(
+    all_featured_data = load_feature_data(
         symbol=symbol,
         data_loader=data_loader,
         force_rebuild=args.force_rebuild,
     )
-    featured_data = split_by_trading_day(featured_data, split=args.split)
+    featured_data = split_by_trading_day(all_featured_data, split=args.split)
+    validation_data = None
+    if args.split == "train" and validation_config.get("enabled", True):
+        validation_data = split_by_trading_day(
+            all_featured_data,
+            split="validation",
+        )
     logger.info(
         "Training %s for %d timesteps on %s (%s split, %d-day episodes)",
         config["agent"]["rl_model_name"],
@@ -113,6 +128,7 @@ def main() -> None:
         )
     artifact_path = train_ppo_artifact(
         featured_data=featured_data,
+        validation_data=validation_data,
         symbol=symbol,
         config=config,
         total_timesteps=total_timesteps,
