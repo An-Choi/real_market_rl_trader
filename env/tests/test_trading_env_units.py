@@ -16,6 +16,7 @@ def flat_data() -> pd.DataFrame:
         {
             "Timestamp": ts,
             "Close": np.full(n, 100.0),
+            "ExecPrice": np.full(n, 100.0),
             "ma_5": np.full(n, 100.0),
         }
     )
@@ -103,6 +104,7 @@ def test_multi_add_mark_to_market_uses_actual_shares() -> None:
         {
             "Timestamp": ts,
             "Close": prices,
+            "ExecPrice": prices,
             "ma_5": prices,
         }
     )
@@ -135,7 +137,7 @@ def test_clear_realizes_mark_to_market_proceeds() -> None:
     """
     prices = [100.0, 110.0, 110.0]
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
-    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ma_5": prices})
+    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ExecPrice": prices, "ma_5": prices})
     from friction.friction_model import FrictionModel
 
     env = TradingEnvironment(
@@ -164,7 +166,7 @@ def test_clear_sell_tax_on_market_proceeds() -> None:
     """
     prices = [100.0, 110.0, 110.0]
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
-    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ma_5": prices})
+    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ExecPrice": prices, "ma_5": prices})
     from friction.friction_model import FrictionModel
 
     sell_tax_rate = 0.002
@@ -192,7 +194,7 @@ def test_last_executable_bar_add_executes() -> None:
     """
     prices = [100.0, 101.0, 102.0]
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
-    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ma_5": prices})
+    data = pd.DataFrame({"Timestamp": ts, "Close": prices, "ExecPrice": prices, "ma_5": prices})
 
     env = TradingEnvironment(
         market_data=data,

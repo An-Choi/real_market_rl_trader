@@ -8,7 +8,8 @@ from env.trading_env import TradingEnvironment
 
 def _day(date_str: str, closes: list[float]) -> pd.DataFrame:
     ts = pd.date_range(f"{date_str} 09:00", periods=len(closes), freq="1min", tz="Asia/Seoul")
-    return pd.DataFrame({"Timestamp": ts, "Close": np.array(closes), "ma_5": np.array(closes)})
+    return pd.DataFrame({"Timestamp": ts, "Close": np.array(closes),
+                         "ExecPrice": np.array(closes, dtype=float), "ma_5": np.array(closes)})
 
 
 def make_env(data: pd.DataFrame) -> TradingEnvironment:

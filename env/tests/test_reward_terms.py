@@ -10,7 +10,8 @@ from friction.friction_model import FrictionModel
 
 def _data(prices: list[float]) -> pd.DataFrame:
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
-    return pd.DataFrame({"Timestamp": ts, "Close": prices, "feature": np.zeros(len(prices))})
+    return pd.DataFrame({"Timestamp": ts, "Close": prices, "ExecPrice": prices,
+                         "feature": np.zeros(len(prices))})
 
 
 def _zero_friction() -> FrictionModel:

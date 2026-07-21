@@ -38,6 +38,7 @@ class TradingEnvironment(gym.Env):
         market_data: pd.DataFrame,
         feature_columns: list[str],
         price_col: str = "Close",
+        exec_price_col: str = "ExecPrice",
         initial_cash: float = 10_000.0,
         unit_fraction: float = 0.20,
         max_units: int = 5,
@@ -69,6 +70,13 @@ class TradingEnvironment(gym.Env):
                 f"feature_schema_version must be a positive int or None: {feature_schema_version!r}"
             )
         self.feature_schema_version = feature_schema_version
+        if exec_price_col not in market_data.columns:
+            raise ValueError(
+                f"market_data missing execution price column {exec_price_col!r} — "
+                "same-bar Close 체결은 lookahead라 금지. feature 캐시를 schema v3로 "
+                "재생성하거나 픽스처에 ExecPrice를 추가하라."
+            )
+        self.exec_price_col = exec_price_col
         self.market_data = market_data.reset_index(drop=True)
         ts = pd.to_datetime(self.market_data["Timestamp"])
         self._date_groups = {
@@ -213,6 +221,18 @@ class TradingEnvironment(gym.Env):
             dtype=bool,
         )
 
+    def _execution_price(self, local_step: int) -> float:
+        """시장가 주문 근사 체결가: ExecPrice(라벨 이후 첫 1분봉 Open/동시호가 단일가).
+
+        NaN이면(경매 print도 다음 1분봉도 없는 말단) 관찰 봉 Close로 fallback —
+        발생 빈도는 극소수(수집 결손일)라 회계 왜곡은 무시 가능 수준.
+        """
+        row = self._row_at(local_step)
+        exec_price = float(row[self.exec_price_col])
+        if np.isfinite(exec_price):
+            return exec_price
+        return float(row[self.price_col])
+
     def _row_at(self, local_step: int) -> pd.Series:
         """Map a local (within-day) step to the global market row."""
         global_idx = int(self._active_index[local_step])
@@ -278,7 +298,7 @@ class TradingEnvironment(gym.Env):
 
         실제 거래·reward에는 쓰지 않는다 — 평가 회계 전용.
         """
-        price = float(self._row_at(self.current_step)[self.price_col])
+        price = self._execution_price(self.current_step)
         held_value = self._held_market_value(price)
         if held_value <= 0:
             return 0.0
@@ -357,14 +377,16 @@ class TradingEnvironment(gym.Env):
         )
 
     def _execute_trade(self, action: int) -> TradeExecution:
-        """Execute a Unit-scaling trade at the current real Close.
+        """Execute a Unit-scaling trade at the next tradable price (ExecPrice).
 
-        보유분은 실제 주식수(`shares_held`)로 추적한다. 매수는 1 Unit = 고정
-        notional만큼 현금을 쓰고 `notional/price`주를 취득, 매도는 보유 주식을
-        현재가로 현금화한다. 거래비용(거래세 포함)은 실제 거래 현금흐름
-        (`trade_value`) 기준으로 부과된다.
+        체결가는 관찰 봉의 Close가 아니라 결정 시점 이후 첫 체결 가능 가격
+        (다음 1분봉 Open, 장 마감 결정은 15:30 동시호가 단일가) — 시장가 주문
+        시뮬레이션. 보유분은 실제 주식수(`shares_held`)로 추적한다. 매수는
+        1 Unit = 고정 notional만큼 현금을 쓰고 `notional/price`주를 취득,
+        매도는 보유 주식을 체결가로 현금화한다. 거래비용(거래세 포함)은 실제
+        거래 현금흐름(`trade_value`) 기준으로 부과된다.
         """
-        price = float(self._row_at(self.current_step)[self.price_col])
+        price = self._execution_price(self.current_step)
         target_units = self._action_to_target_units(action)
         unit_notional = self.initial_cash * self.unit_fraction
         prev_units = self.units_held

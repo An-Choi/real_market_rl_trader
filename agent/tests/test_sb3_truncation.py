@@ -15,6 +15,7 @@ def _make_env() -> TradingEnvironment:
         frames.append(pd.DataFrame({
             "Timestamp": ts,
             "Close": np.full(3, 100.0),
+            "ExecPrice": np.full(3, 100.0),
             "ma_5": np.full(3, 100.0),
         }))
     return TradingEnvironment(
