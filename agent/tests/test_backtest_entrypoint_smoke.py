@@ -167,6 +167,7 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
         market_data=featured_data,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         friction_model=FrictionModel(),
+        unit_fraction=0.199,  # 레포 config와 일치해야 CLI 백테스트가 artifact를 수용
         episode_days=20,
         duration_horizon_bars=1280,
         nominal_bars_per_day=64,

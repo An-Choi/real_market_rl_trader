@@ -208,18 +208,34 @@ class TradingEnvironment(gym.Env):
     def action_masks(self) -> np.ndarray:
         """Return actions that can change or preserve the current position.
 
-        Hold is always valid. Add is invalid at maximum allocation and Clear is
-        invalid while flat. Mask-aware policies avoid learning from duplicate
-        no-op actions without changing the public three-action contract.
+        Hold is always valid. Add is invalid at maximum allocation **or when
+        cash cannot cover the buy notional plus friction** (cash ≥ 0 invariant
+        — 음수 현금은 무이자 레버리지라 금지). Clear is invalid while flat.
+        Mask-aware policies avoid learning from duplicate no-op actions without
+        changing the public three-action contract.
         """
         return np.array(
             [
                 True,
-                self.units_held < self.max_units,
+                self.units_held < self.max_units and self._can_afford_add(),
                 self.units_held > 0,
             ],
             dtype=bool,
         )
+
+    def _can_afford_add(self) -> bool:
+        """1 Unit 매수(고정 notional + 매수 friction)를 현금으로 감당 가능한가.
+
+        매수 현금 유출은 가격과 무관(고정 notional)이라 관찰 시점에 정확히
+        계산된다 — mask가 미래 정보에 의존하지 않는다.
+        """
+        unit_notional = self.initial_cash * self.unit_fraction
+        buy_friction = self.friction_model.calculate_total_friction(
+            trade_value=unit_notional,
+            side="buy",
+            liquidity_score=self._current_liquidity_score(),
+        )
+        return self.cash >= unit_notional + buy_friction
 
     def _execution_price(self, local_step: int) -> float:
         """시장가 주문 근사 체결가: ExecPrice(라벨 이후 첫 1분봉 Open/동시호가 단일가).
@@ -391,6 +407,11 @@ class TradingEnvironment(gym.Env):
         unit_notional = self.initial_cash * self.unit_fraction
         prev_units = self.units_held
         delta_units = target_units - prev_units
+        if delta_units > 0 and not self._can_afford_add():
+            # 마스크를 안 쓰는 정책(PPO·baseline·random)의 방어선: 현금 부족
+            # Add는 max-units Add와 동일하게 no-op — cash ≥ 0 불변식 유지.
+            target_units = prev_units
+            delta_units = 0
 
         if delta_units > 0:
             # 매수: 고정 notional 지출, shares 누적.
