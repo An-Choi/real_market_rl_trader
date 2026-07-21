@@ -223,17 +223,27 @@ class TradingEnvironment(gym.Env):
             dtype=bool,
         )
 
-    def _can_afford_add(self) -> bool:
+    def _can_afford_add(
+        self, price: float | None = None, trade_date=None
+    ) -> bool:
         """1 Unit 매수(고정 notional + 매수 friction)를 현금으로 감당 가능한가.
 
-        매수 현금 유출은 가격과 무관(고정 notional)이라 관찰 시점에 정확히
-        계산된다 — mask가 미래 정보에 의존하지 않는다.
+        매수 현금 유출은 고정 notional이라 가격은 friction의 스프레드 비율에만
+        관여한다. mask 경로는 인자 없이 호출되어 **관찰된 봉**의 Close·날짜로
+        추정(causal — 미래 정보 미사용), 체결부는 실제 체결가·체결일로 재확인.
         """
+        row = self._row_at(self.current_step)
+        if price is None:
+            price = float(row[self.price_col])
+        if trade_date is None:
+            trade_date = pd.Timestamp(row["Timestamp"]).date()
         unit_notional = self.initial_cash * self.unit_fraction
         buy_friction = self.friction_model.calculate_total_friction(
             trade_value=unit_notional,
             side="buy",
             liquidity_score=self._current_liquidity_score(),
+            price=price,
+            trade_date=trade_date,
         )
         return self.cash >= unit_notional + buy_friction
 
@@ -322,6 +332,8 @@ class TradingEnvironment(gym.Env):
             trade_value=held_value,
             side="sell",
             liquidity_score=self._current_liquidity_score(),
+            price=price,
+            trade_date=pd.Timestamp(self._row_at(self.current_step)["Timestamp"]).date(),
         )
 
     def _get_observation(self) -> np.ndarray:
@@ -403,13 +415,15 @@ class TradingEnvironment(gym.Env):
         거래 현금흐름(`trade_value`) 기준으로 부과된다.
         """
         price = self._execution_price(self.current_step)
+        trade_date = pd.Timestamp(self._row_at(self.current_step)["Timestamp"]).date()
         target_units = self._action_to_target_units(action)
         unit_notional = self.initial_cash * self.unit_fraction
         prev_units = self.units_held
         delta_units = target_units - prev_units
-        if delta_units > 0 and not self._can_afford_add():
-            # 마스크를 안 쓰는 정책(PPO·baseline·random)의 방어선: 현금 부족
-            # Add는 max-units Add와 동일하게 no-op — cash ≥ 0 불변식 유지.
+        if delta_units > 0 and not self._can_afford_add(price=price, trade_date=trade_date):
+            # 마스크를 안 쓰는 정책(PPO·baseline·random)의 방어선이자, 실제
+            # 체결가 기준 재확인(마스크는 관찰가 기준 추정): 현금 부족 Add는
+            # max-units Add와 동일하게 no-op — cash ≥ 0 불변식 유지.
             target_units = prev_units
             delta_units = 0
 
@@ -438,6 +452,8 @@ class TradingEnvironment(gym.Env):
                 trade_value=trade_value,
                 side=side,
                 liquidity_score=liquidity_score,
+                price=price,
+                trade_date=trade_date,
             )
             if delta_units != 0
             else 0.0
