@@ -110,7 +110,7 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
     assert loaded_agent.observation_normalizer is not None
     assert loaded_agent.model.n_steps == 8
     assert loaded_agent.model.ent_coef == 0.01
-    assert action in (0, 1, 2)
+    assert action in range(6)
     event_files = list((tmp_path / "tensorboard").rglob("events.out.tfevents.*"))
     assert event_files
     event_data = EventAccumulator(str(event_files[0].parent))
@@ -120,13 +120,13 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
         "returns/cumulative_return",
         "returns/benchmark_cumulative_return",
         "portfolio/value_mean",
-        "actions/hold_rate",
+        "actions/target_0pct_rate",
         "cost/friction_sum",
         "trading/forced_clear_count",
         "reward/base_return_mean",
         "daily/portfolio_return",
         "daily/benchmark_return",
         "daily/friction_sum",
-        "daily/hold_rate",
+        "daily/target_0pct_rate",
         "daily/reward_base_return_mean",
     }.issubset(scalar_tags)

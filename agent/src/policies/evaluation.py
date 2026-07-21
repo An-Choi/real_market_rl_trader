@@ -20,6 +20,8 @@ BACKTEST_INFO_KEYS = (
     "valuation_timestamp",
     "valuation_price",
     "held_market_value",
+    "target_allocation",
+    "actual_allocation",
     "trade_value",
     "execution_date",
     "valuation_date",

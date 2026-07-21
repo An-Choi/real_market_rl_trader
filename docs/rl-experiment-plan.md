@@ -12,15 +12,14 @@ policy-learning and evaluation loop for adaptive single-symbol position control.
 - Policy: single shared MaskablePPO policy.
 - Observation: multi-timeframe features plus portfolio state.
 - Action space:
-  - `0`: Hold
-  - `1`: Add 1 Unit
-  - `2`: Clear Position
-- Position sizing: fixed unit scaling, 1 Unit = 20% of initial cash, max 5 Units.
+  - `0..5`: target stock allocation `0/20/40/60/80/100%`
+- Position sizing: friction-aware target allocation based on current portfolio value.
+  Repeating the selected target is a no-op hold.
 - Episode: configurable contiguous trading-day window (`environment.episode_days`).
   The current default uses 20 trading days, carries positions overnight, and
   treats the artificial window boundary as truncation. Evaluation subtracts a
   virtual liquidation cost at the end of the selected split.
-- Invalid actions: Clear is masked while flat and Add is masked at max units.
+- Invalid actions: none; all six target allocations are always valid.
 
 ## Current Workflow
 
@@ -144,7 +143,7 @@ Backtest summaries currently include:
 - `turnover`
 - `evaluated_days`
 - `overnight_hold_rate`, `open_at_end`, `terminal_liquidation_cost`
-- `hold_action_rate`, `add_action_rate`, `clear_action_rate`
+- `target_0pct_action_rate`부터 `target_100pct_action_rate`까지 6개 목표 비중 행동률
 
 For multi-seed runs, output includes:
 

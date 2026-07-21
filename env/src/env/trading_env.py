@@ -13,9 +13,11 @@ from friction.friction_model import FrictionModel
 from env.reward import RewardConfig, RewardTerms, calculate_reward_terms
 
 
-ACTION_HOLD = 0
-ACTION_ADD = 1
-ACTION_CLEAR = 2
+TARGET_ALLOCATION_FRACTIONS = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+TARGET_ACTION_LABELS = tuple(
+    f"target_{int(fraction * 100)}pct" for fraction in TARGET_ALLOCATION_FRACTIONS
+)
+ACTION_COUNT = len(TARGET_ALLOCATION_FRACTIONS)
 
 
 @dataclass
@@ -57,7 +59,7 @@ class TradingEnvironment(gym.Env):
     ) -> None:
         """Real-OHLCV intraday Unit-scaling environment.
 
-        Discrete actions: 0=Hold, 1=Add 1 Unit, 2=Clear.
+        Discrete actions select target stock allocations: 0%, 20%, ..., 100%.
         feature_schema_version: feature 계산 파이프라인의 schema version 선언 — artifact 호환성 검증용.
         """
         super().__init__()
@@ -128,7 +130,11 @@ class TradingEnvironment(gym.Env):
             return_mode=reward_return_mode,
         )
 
-        self.action_space = spaces.Discrete(3)
+        if max_units != ACTION_COUNT - 1:
+            raise ValueError(
+                f"max_units must be {ACTION_COUNT - 1} for the fixed 20% target grid"
+            )
+        self.action_space = spaces.Discrete(ACTION_COUNT)
         observation_size = len(self.feature_columns) + 4
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -143,6 +149,7 @@ class TradingEnvironment(gym.Env):
         self.shares_held = 0.0
         self.entry_step: int | None = None
         self.entry_price: float | None = None
+        self.position_cost_basis = 0.0
         self.portfolio_value = self.initial_cash
         self.peak_portfolio_value = self.initial_cash
         self.trade_history: list[TradeExecution] = []
@@ -188,6 +195,7 @@ class TradingEnvironment(gym.Env):
         self.shares_held = 0.0
         self.entry_step = None
         self.entry_price = None
+        self.position_cost_basis = 0.0
         self.portfolio_value = self.initial_cash
         self.peak_portfolio_value = self.initial_cash
         self.trade_history = []
@@ -206,46 +214,13 @@ class TradingEnvironment(gym.Env):
         return tuple(self._available_dates)
 
     def action_masks(self) -> np.ndarray:
-        """Return actions that can change or preserve the current position.
+        """All six target allocations are valid.
 
-        Hold is always valid. Add is invalid at maximum allocation **or when
-        cash cannot cover the buy notional plus friction** (cash ≥ 0 invariant
-        — 음수 현금은 무이자 레버리지라 금지). Clear is invalid while flat.
-        Mask-aware policies avoid learning from duplicate no-op actions without
-        changing the public three-action contract.
+        Repeating the currently selected target is the unique hold/no-op action.
+        A 100% target remains affordable because execution solves the target
+        weight after friction instead of spending pre-friction cash in full.
         """
-        return np.array(
-            [
-                True,
-                self.units_held < self.max_units and self._can_afford_add(),
-                self.units_held > 0,
-            ],
-            dtype=bool,
-        )
-
-    def _can_afford_add(
-        self, price: float | None = None, trade_date=None
-    ) -> bool:
-        """1 Unit 매수(고정 notional + 매수 friction)를 현금으로 감당 가능한가.
-
-        매수 현금 유출은 고정 notional이라 가격은 friction의 스프레드 비율에만
-        관여한다. mask 경로는 인자 없이 호출되어 **관찰된 봉**의 Close·날짜로
-        추정(causal — 미래 정보 미사용), 체결부는 실제 체결가·체결일로 재확인.
-        """
-        row = self._row_at(self.current_step)
-        if price is None:
-            price = float(row[self.price_col])
-        if trade_date is None:
-            trade_date = pd.Timestamp(row["Timestamp"]).date()
-        unit_notional = self.initial_cash * self.unit_fraction
-        buy_friction = self.friction_model.calculate_total_friction(
-            trade_value=unit_notional,
-            side="buy",
-            liquidity_score=self._current_liquidity_score(),
-            price=price,
-            trade_date=trade_date,
-        )
-        return self.cash >= unit_notional + buy_friction
+        return np.ones(ACTION_COUNT, dtype=bool)
 
     def _execution_price(self, local_step: int) -> float:
         """시장가 주문 근사 체결가: ExecPrice(라벨 이후 첫 1분봉 Open/동시호가 단일가).
@@ -300,6 +275,8 @@ class TradingEnvironment(gym.Env):
         info = {
             "portfolio_value": self.portfolio_value,
             "units_held": self.units_held,
+            "target_allocation": self.units_held / self.max_units,
+            "actual_allocation": self._actual_allocation(),
             "friction_cost": execution.friction_cost,
             "trade_value": execution.trade_value,
             "execution_date": str(execution_timestamp.date()),
@@ -354,8 +331,9 @@ class TradingEnvironment(gym.Env):
         price = float(row[self.price_col])
         units_held_frac = self.units_held / max(self.max_units, 1)
         held_value = self._held_market_value(price)
-        cost_basis = self.units_held * self.initial_cash * self.unit_fraction
-        unrealized_pnl_norm = (held_value - cost_basis) / max(self.initial_cash, 1e-9)
+        unrealized_pnl_norm = (
+            held_value - self.position_cost_basis
+        ) / max(self.initial_cash, 1e-9)
         if self.units_held > 0 and self.entry_step is not None:
             holding_duration_norm = min(
                 (self.current_step - self.entry_step) / self.duration_horizon_bars, 1.0
@@ -405,63 +383,74 @@ class TradingEnvironment(gym.Env):
         )
 
     def _execute_trade(self, action: int) -> TradeExecution:
-        """Execute a Unit-scaling trade at the next tradable price (ExecPrice).
+        """Trade to one of six target allocations at the next tradable price.
 
         체결가는 관찰 봉의 Close가 아니라 결정 시점 이후 첫 체결 가능 가격
         (다음 1분봉 Open, 장 마감 결정은 15:30 동시호가 단일가) — 시장가 주문
-        시뮬레이션. 보유분은 실제 주식수(`shares_held`)로 추적한다. 매수는
-        1 Unit = 고정 notional만큼 현금을 쓰고 `notional/price`주를 취득,
-        매도는 보유 주식을 체결가로 현금화한다. 거래비용(거래세 포함)은 실제
-        거래 현금흐름(`trade_value`) 기준으로 부과된다.
+        시뮬레이션. 같은 목표를 반복하면 no-op으로 보유한다. 목표가 바뀌면
+        거래비용 차감 후 주식 평가액 / 포트폴리오 가치가 목표 비중이 되도록
+        선형 friction을 포함해 주문 금액을 계산한다.
         """
         price = self._execution_price(self.current_step)
         trade_date = pd.Timestamp(self._row_at(self.current_step)["Timestamp"]).date()
-        target_units = self._action_to_target_units(action)
-        unit_notional = self.initial_cash * self.unit_fraction
+        target_units = int(action)
         prev_units = self.units_held
-        delta_units = target_units - prev_units
-        if delta_units > 0 and not self._can_afford_add(price=price, trade_date=trade_date):
-            # 마스크를 안 쓰는 정책(PPO·baseline·random)의 방어선이자, 실제
-            # 체결가 기준 재확인(마스크는 관찰가 기준 추정): 현금 부족 Add는
-            # max-units Add와 동일하게 no-op — cash ≥ 0 불변식 유지.
-            target_units = prev_units
-            delta_units = 0
-
-        if delta_units > 0:
-            # 매수: 고정 notional 지출, shares 누적.
-            trade_value = delta_units * unit_notional
-            side = "buy"
-            self.cash -= trade_value
-            self.shares_held += trade_value / price
-            if self.entry_step is None:
-                self.entry_step = self.current_step
-        elif delta_units < 0:
-            # 매도(Clear): 보유 주식을 현재가로 현금화. (long-only라 항상 전량 청산.)
-            shares_sold = self.shares_held
-            trade_value = -shares_sold * price
-            side = "sell"
-            self.cash += shares_sold * price
-            self.shares_held = 0.0
-        else:
-            trade_value = 0.0
-            side = "buy"
-
         liquidity_score = self._current_liquidity_score()
-        friction_cost = (
-            self.friction_model.calculate_total_friction(
-                trade_value=trade_value,
+        trade_value = 0.0
+        friction_cost = 0.0
+
+        if target_units != prev_units:
+            target_fraction = TARGET_ALLOCATION_FRACTIONS[target_units]
+            held_value = self._held_market_value(price)
+            portfolio_value = self.cash + held_value
+            desired_value = target_fraction * portfolio_value
+            side = "buy" if desired_value > held_value else "sell"
+            friction_rate = self.friction_model.calculate_total_friction(
+                trade_value=1.0,
                 side=side,
                 liquidity_score=liquidity_score,
                 price=price,
                 trade_date=trade_date,
             )
-            if delta_units != 0
-            else 0.0
-        )
-        self.cash -= friction_cost
+
+            if side == "buy":
+                notional = max(
+                    0.0,
+                    (desired_value - held_value) / (1.0 + target_fraction * friction_rate),
+                )
+                notional = min(notional, self.cash / (1.0 + friction_rate))
+                friction_cost = notional * friction_rate
+                self.cash -= notional + friction_cost
+                self.shares_held += notional / price
+                self.position_cost_basis += notional
+                trade_value = notional
+                if self.entry_step is None:
+                    self.entry_step = self.current_step
+            else:
+                denominator = max(1.0 - target_fraction * friction_rate, 1e-9)
+                notional = max(0.0, (held_value - desired_value) / denominator)
+                notional = min(notional, held_value)
+                shares_before = self.shares_held
+                shares_sold = min(notional / price, shares_before)
+                trade_notional = shares_sold * price
+                friction_cost = trade_notional * friction_rate
+                self.cash += trade_notional - friction_cost
+                self.shares_held -= shares_sold
+                if shares_before > 0:
+                    self.position_cost_basis *= self.shares_held / shares_before
+                trade_value = -trade_notional
+
         self.units_held = target_units
         if target_units == 0:
+            self.shares_held = 0.0
+            self.position_cost_basis = 0.0
             self.entry_step = None
+            self.entry_price = None
+        elif self.shares_held > 0:
+            self.entry_price = self.position_cost_basis / self.shares_held
+
+        if self.cash < 0 and self.cash > -1e-8:
+            self.cash = 0.0
 
         execution = TradeExecution(
             action=action,
@@ -472,17 +461,15 @@ class TradingEnvironment(gym.Env):
         self.trade_history.append(execution)
         return execution
 
-    def _action_to_target_units(self, action: int) -> int:
-        """Map discrete action to target Unit count (long-only, 0..max_units)."""
-        if action == ACTION_ADD:
-            return min(self.units_held + 1, self.max_units)
-        if action == ACTION_CLEAR:
-            return 0
-        return self.units_held
-
     def _held_market_value(self, price: float) -> float:
         """Current market value of held shares (actual shares * current price)."""
         return self.shares_held * price
+
+    def _actual_allocation(self) -> float:
+        price = float(self._row_at(self.current_step)[self.price_col])
+        held_value = self._held_market_value(price)
+        value = self.cash + held_value
+        return held_value / max(value, 1e-9)
 
     def _calculate_portfolio_value(self) -> float:
         """Mark-to-market: cash + held notional scaled by price change."""

@@ -97,21 +97,13 @@ class RLAgent:
 
     @staticmethod
     def _mask_from_observation(observation: Any) -> Any:
-        """Derive the mask from the unnormalized units-held portfolio field."""
+        """All target-allocation actions are valid by construction."""
         import numpy as np
 
         values = np.asarray(observation)
         if values.shape[-1] < 4:
             raise ValueError("observation is missing the four portfolio state fields")
-        units_held_frac = values[..., -4]
-        return np.stack(
-            (
-                np.ones_like(units_held_frac, dtype=bool),
-                units_held_frac < 1.0 - 1e-6,
-                units_held_frac > 1e-6,
-            ),
-            axis=-1,
-        )
+        return np.ones((*values.shape[:-1], 6), dtype=bool)
 
 
 def make_rl_agent(

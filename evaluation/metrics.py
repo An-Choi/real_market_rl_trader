@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from env.trading_env import TARGET_ACTION_LABELS
+
 
 def calculate_total_return(equity_curve: pd.Series) -> float:
     """Calculate total return from an equity curve."""
@@ -122,9 +124,7 @@ _EMPTY_SUMMARY = {
     "open_at_end": 0.0,
     "terminal_liquidation_cost": 0.0,
     "market_return": 0.0,
-    "hold_action_rate": 0.0,
-    "add_action_rate": 0.0,
-    "clear_action_rate": 0.0,
+    **{f"{label}_action_rate": 0.0 for label in TARGET_ACTION_LABELS},
     "cum_transition_return": 0.0,
     "cum_intraday_return": 0.0,
     "cum_settlement_return": 0.0,
@@ -191,9 +191,10 @@ def summarize_backtest(
         "open_at_end": float(results["units_held"].iloc[-1] > 0),
         "terminal_liquidation_cost": float(terminal_liquidation_cost),
         "market_return": market_return,
-        "hold_action_rate": float(action_rates.get(0, 0.0)),
-        "add_action_rate": float(action_rates.get(1, 0.0)),
-        "clear_action_rate": float(action_rates.get(2, 0.0)),
+        **{
+            f"{label}_action_rate": float(action_rates.get(index, 0.0))
+            for index, label in enumerate(TARGET_ACTION_LABELS)
+        },
         "cum_transition_return": cum_transition_return,
         "cum_intraday_return": cum_intraday_return,
         "cum_settlement_return": cum_settlement_return,

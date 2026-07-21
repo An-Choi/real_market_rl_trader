@@ -32,15 +32,15 @@ def make_env(data: pd.DataFrame) -> TradingEnvironment:
     )
 
 
-def test_add_increments_units(flat_data: pd.DataFrame) -> None:
+def test_target_20pct_selects_one_allocation_step(flat_data: pd.DataFrame) -> None:
     env = make_env(flat_data)
     env.reset(seed=0)
-    _, _, _, _, info = env.step(1)  # Add 1 Unit
+    _, _, _, _, info = env.step(1)  # Target 20%
     assert info["units_held"] == 1
+    assert info["actual_allocation"] == pytest.approx(0.20)
 
 
-def test_add_caps_at_max_units(flat_data: pd.DataFrame) -> None:
-    # friction 0으로 두면 5 Unit = 자본 100%가 정확히 도달 가능 (cash 0).
+def test_target_100pct_reaches_full_allocation(flat_data: pd.DataFrame) -> None:
     from friction.friction_model import FrictionModel
 
     env = TradingEnvironment(
@@ -50,30 +50,62 @@ def test_add_caps_at_max_units(flat_data: pd.DataFrame) -> None:
                                      slippage_rate=0.0, sell_tax_rate=0.0),
     )
     env.reset(seed=0)
-    for _ in range(7):  # 5번이면 max, 이후 no-op
-        _, _, _, _, info = env.step(1)
+    _, _, _, _, info = env.step(5)
     assert info["units_held"] == 5
     assert env.cash == pytest.approx(0.0)
+    assert info["actual_allocation"] == pytest.approx(1.0)
 
 
-def test_add_blocked_when_cash_insufficient(flat_data: pd.DataFrame) -> None:
-    """현금 게이트: friction 포함 매수 비용을 감당 못 하면 Add는 no-op."""
-    env = make_env(flat_data)  # 기본 friction: 매수 0.2% = 4원/Unit
-    env.reset(seed=0)
-    for _ in range(7):
-        _, _, _, _, info = env.step(1)
-    # 4번 매수 후 cash = 10,000 − 4×2,004 = 1,984 < 2,004 → 5번째 차단
-    assert info["units_held"] == 4
-    assert env.cash >= 0.0
-
-
-def test_action_mask_reflects_cash_gate(flat_data: pd.DataFrame) -> None:
+def test_target_100pct_accounts_for_friction_without_negative_cash(
+    flat_data: pd.DataFrame,
+) -> None:
     env = make_env(flat_data)
     env.reset(seed=0)
-    for _ in range(4):
-        env.step(1)
-    # units(4) < max(5)지만 현금 부족 → Add 마스크 False
-    assert env.action_masks().tolist() == [True, False, True]
+    _, _, _, _, info = env.step(5)
+    assert info["units_held"] == 5
+    assert env.cash >= 0.0
+    assert info["actual_allocation"] == pytest.approx(1.0)
+
+
+def test_all_target_allocations_are_valid(flat_data: pd.DataFrame) -> None:
+    env = make_env(flat_data)
+    env.reset(seed=0)
+    assert env.action_masks().tolist() == [True] * 6
+    env.step(5)
+    assert env.action_masks().tolist() == [True] * 6
+
+
+@pytest.mark.parametrize("action", range(6))
+def test_each_action_reaches_its_target_weight(
+    flat_data: pd.DataFrame,
+    action: int,
+) -> None:
+    env = make_env(flat_data)
+    env.reset(seed=0)
+    _, _, _, _, info = env.step(action)
+    assert info["actual_allocation"] == pytest.approx(action / 5)
+
+
+def test_repeating_same_target_is_no_op(flat_data: pd.DataFrame) -> None:
+    env = make_env(flat_data)
+    env.reset(seed=0)
+    env.step(3)
+    shares = env.shares_held
+    cash = env.cash
+    _, _, _, _, info = env.step(3)
+    assert info["trade_value"] == 0.0
+    assert info["friction_cost"] == 0.0
+    assert env.shares_held == shares
+    assert env.cash == cash
+
+
+def test_lower_target_partially_sells_to_requested_weight(flat_data: pd.DataFrame) -> None:
+    env = make_env(flat_data)
+    env.reset(seed=0)
+    env.step(5)
+    _, _, _, _, info = env.step(2)
+    assert info["trade_value"] < 0.0
+    assert info["actual_allocation"] == pytest.approx(0.40)
 
 
 def test_cash_never_negative_under_random_actions(flat_data: pd.DataFrame) -> None:
@@ -82,38 +114,36 @@ def test_cash_never_negative_under_random_actions(flat_data: pd.DataFrame) -> No
     env = make_env(flat_data)
     env.reset(seed=3)
     for _ in range(9):
-        _, _, terminated, truncated, _ = env.step(int(rng.integers(0, 3)))
+        _, _, terminated, truncated, _ = env.step(int(rng.integers(0, 6)))
         assert env.cash >= 0.0
         if terminated or truncated:
             break
 
 
-def test_unit_fraction_199_reaches_max_units_with_friction(flat_data: pd.DataFrame) -> None:
-    """config 기본값 0.199는 friction을 내고도 5 Unit 도달이 가능해야 한다."""
+def test_target_weights_do_not_depend_on_legacy_unit_fraction(flat_data: pd.DataFrame) -> None:
     env = TradingEnvironment(
         market_data=flat_data, feature_columns=["ma_5"],
         initial_cash=10_000.0, unit_fraction=0.199, max_units=5,
     )
     env.reset(seed=0)
-    for _ in range(5):
-        _, _, _, _, info = env.step(1)
+    _, _, _, _, info = env.step(5)
     assert info["units_held"] == 5
     assert env.cash >= 0.0
+    assert info["actual_allocation"] == pytest.approx(1.0)
 
 
-def test_clear_zeroes_units(flat_data: pd.DataFrame) -> None:
+def test_target_zero_clears_position(flat_data: pd.DataFrame) -> None:
     env = make_env(flat_data)
     env.reset(seed=0)
-    env.step(1)
-    env.step(1)
-    _, _, _, _, info = env.step(2)  # Clear
+    env.step(2)
+    _, _, _, _, info = env.step(0)  # Target 0%
     assert info["units_held"] == 0
 
 
 def test_long_only_no_negative_units(flat_data: pd.DataFrame) -> None:
     env = make_env(flat_data)
     env.reset(seed=0)
-    _, _, _, _, info = env.step(2)  # Clear with no position → no-op
+    _, _, _, _, info = env.step(0)  # Target 0% while flat → no-op
     assert info["units_held"] == 0
 
 
@@ -121,13 +151,13 @@ def test_invalid_action_raises(flat_data: pd.DataFrame) -> None:
     env = make_env(flat_data)
     env.reset(seed=0)
     with pytest.raises(ValueError):
-        env.step(3)
+        env.step(6)
 
 
-def test_friction_charged_on_add(flat_data: pd.DataFrame) -> None:
+def test_friction_charged_when_increasing_target(flat_data: pd.DataFrame) -> None:
     env = make_env(flat_data)
     env.reset(seed=0)
-    _, _, _, _, info = env.step(1)  # Add → buys 1 Unit (2000 notional)
+    _, _, _, _, info = env.step(1)
     assert info["friction_cost"] > 0
 
 
@@ -140,18 +170,13 @@ def test_friction_counted_once_in_reward(flat_data: pd.DataFrame) -> None:
     env = make_env(flat_data)
     env.reset(seed=0)
     previous_value = env.portfolio_value
-    _, reward, _, _, info = env.step(1)  # Add 1 Unit (buy), 가격 변동 없음
+    _, reward, _, _, info = env.step(1)
     expected = -info["friction_cost"] / previous_value
     assert reward == pytest.approx(expected)
 
 
-def test_multi_add_mark_to_market_uses_actual_shares() -> None:
-    """서로 다른 가격에 Add한 Unit의 mark-to-market은 실제 보유 주식 수 기준이어야 한다.
-
-    1 Unit = 고정 2000 notional. 100에 1 Unit(=20주), 200에 1 Unit(=10주)을 사면
-    총 30주. 현재가 200이면 보유분 시가는 30 * 200 = 6000이어야 한다.
-    friction을 0으로 두어 거래비용 드래그를 배제하고 순수 valuation만 검증한다.
-    """
+def test_target_change_uses_current_portfolio_value() -> None:
+    """가격 변동 후 40% 목표는 최초 자본이 아닌 현재 자산 기준이어야 한다."""
     prices = [100.0, 200.0, 200.0]
     ts = pd.date_range("2025-06-02 09:00", periods=len(prices), freq="1min", tz="Asia/Seoul")
     data = pd.DataFrame(
@@ -175,11 +200,10 @@ def test_multi_add_mark_to_market_uses_actual_shares() -> None:
         ),
     )
     env.reset(seed=0)
-    env.step(1)  # step 0: Add 1 Unit @100 → 20 shares
-    env.step(1)  # step 1: Add 1 Unit @200 → +10 shares (now 30 shares); valued @200
+    env.step(1)  # 20% target at 100
+    _, _, _, _, info = env.step(2)  # 40% target at 200
 
-    held_value = env.portfolio_value - env.cash
-    assert held_value == pytest.approx(6000.0)
+    assert info["actual_allocation"] == pytest.approx(0.40)
 
 
 def test_clear_realizes_mark_to_market_proceeds() -> None:
@@ -205,8 +229,8 @@ def test_clear_realizes_mark_to_market_proceeds() -> None:
         ),
     )
     env.reset(seed=0)
-    env.step(1)  # Add 1 Unit @100 → 20 shares, cash 8000
-    _, _, _, _, info = env.step(2)  # Clear @110 → proceeds 2200
+    env.step(1)  # Target 20% @100
+    _, _, _, _, info = env.step(0)  # Target 0% @110
 
     assert env.cash == pytest.approx(10_200.0)
     assert info["portfolio_value"] == pytest.approx(10_200.0)
@@ -236,7 +260,7 @@ def test_clear_sell_tax_on_market_proceeds() -> None:
     )
     env.reset(seed=0)
     env.step(1)  # Add @100
-    _, _, _, _, info = env.step(2)  # Clear @110, proceeds 2200
+    _, _, _, _, info = env.step(0)  # Target 0% @110, proceeds 2200
 
     assert info["friction_cost"] == pytest.approx(2200.0 * sell_tax_rate)
 
@@ -265,22 +289,20 @@ def test_last_executable_bar_add_executes() -> None:
     assert info["units_held"] == 1
 
 
-def test_clear_sell_tax_exact_amount(flat_data: pd.DataFrame) -> None:
-    """매도(Clear) step에서 거래세가 정확히 abs(trade_value) * sell_tax_rate 만큼만
-    매수 대비 추가된다.
-
-    매수/매도 거래 규모가 동일(1 Unit = 2000 notional)하고 다른 비용은
-    좌우 대칭이므로, 두 step friction 차이는 정확히 매도 거래세여야 한다.
-    """
+def test_target_zero_sell_tax_exact_amount(flat_data: pd.DataFrame) -> None:
+    """0% 목표 매도의 friction에는 매도 거래세가 정확히 포함된다."""
     env = make_env(flat_data)
     env.reset(seed=0)
     sell_tax_rate = env.friction_model.sell_tax_rate
     assert sell_tax_rate > 0  # 이 검증이 의미 있으려면 세율이 0이 아니어야 함
 
-    _, _, _, _, add_info = env.step(1)   # Add 1 Unit (buy)
-    _, _, _, _, clear_info = env.step(2)  # Clear (sell), 동일 규모
-
-    unit_notional = env.initial_cash * env.unit_fraction  # 1 Unit 거래 금액
-    expected_tax = unit_notional * sell_tax_rate
-    diff = clear_info["friction_cost"] - add_info["friction_cost"]
-    assert diff == pytest.approx(expected_tax)
+    env.step(1)
+    _, _, _, _, clear_info = env.step(0)
+    sold_notional = abs(clear_info["trade_value"])
+    symmetric_cost = sold_notional * (
+        env.friction_model.fee_rate
+        + env.friction_model.spread_rate
+        + env.friction_model.slippage_rate
+    )
+    expected = symmetric_cost + sold_notional * sell_tax_rate
+    assert clear_info["friction_cost"] == pytest.approx(expected)

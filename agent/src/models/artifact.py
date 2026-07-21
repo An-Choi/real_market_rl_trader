@@ -34,8 +34,15 @@ REQUIRED_ENV_PARAMS_BY_VERSION = {
 REQUIRED_ENV_PARAMS = REQUIRED_ENV_PARAMS_BY_VERSION[1]
 POSITIVE_INT_ENV_PARAMS = ("episode_days", "duration_horizon_bars", "nominal_bars_per_day")
 LEGACY_SEMANTICS_MAX_VERSION = 1  # v1 = 당일 기준 holding_duration_norm으로 학습됨
-# trading_env의 ACTION_HOLD=0 / ACTION_ADD=1 / ACTION_CLEAR=2와 순서 고정 계약
-EXPECTED_ACTION_LABELS = ["hold", "add_unit", "clear"]
+# trading_env의 0/20/40/60/80/100% 목표 비중과 순서 고정 계약
+EXPECTED_ACTION_LABELS = [
+    "target_0pct",
+    "target_20pct",
+    "target_40pct",
+    "target_60pct",
+    "target_80pct",
+    "target_100pct",
+]
 METADATA_FILENAME = "metadata.json"
 MODEL_FILENAME = "model.zip"
 DEFAULT_PORTFOLIO_STATE_FIELDS = [
@@ -213,7 +220,11 @@ def make_training_metadata(
         feature_columns=list(feature_columns),
         portfolio_state_fields=portfolio_fields,
         observation_dim=len(feature_columns) + len(portfolio_fields),
-        action_space={"type": "discrete", "n": 3, "labels": list(EXPECTED_ACTION_LABELS)},
+        action_space={
+            "type": "discrete",
+            "n": len(EXPECTED_ACTION_LABELS),
+            "labels": list(EXPECTED_ACTION_LABELS),
+        },
         normalization=normalization,
         train_git_sha=current_git_sha(),
         train_data={"symbols": [symbol], "start": train_start, "end": train_end},

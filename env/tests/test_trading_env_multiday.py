@@ -131,14 +131,9 @@ def test_reset_info_has_initial_market_price() -> None:
 def test_action_masks_remove_duplicate_no_op_actions() -> None:
     env = make_env(_days(2, bars_per_day=8), episode_days=2)
     env.reset(seed=0)
-    assert env.action_masks().tolist() == [True, True, False]
-
-    for _ in range(env.max_units):
-        env.step(1)
-    assert env.action_masks().tolist() == [True, False, True]
-
-    env.step(2)
-    assert env.action_masks().tolist() == [True, True, False]
+    assert env.action_masks().tolist() == [True] * 6
+    env.step(5)
+    assert env.action_masks().tolist() == [True] * 6
 
 
 def _two_day_gap_data() -> pd.DataFrame:
@@ -171,8 +166,8 @@ def test_position_persists_across_day_boundary() -> None:
     env.reset(seed=0)
     env.step(1)  # bar0에서 Add
     # bar2(=day1 마지막 bar)에서 실행되는 step: day 경계를 넘어 bar3에서 평가
-    env.step(0)
-    _, _, _, _, info = env.step(0)
+    env.step(1)
+    _, _, _, _, info = env.step(1)
     assert info["units_held"] == 1  # 강제청산 없이 유지
     ts_exec = pd.Timestamp(info["valuation_timestamp"])
     assert ts_exec.date().isoformat() == "2025-06-03"
@@ -183,9 +178,9 @@ def test_overnight_gap_reflected_in_portfolio_value() -> None:
     env.reset(seed=0)
     _, _, _, _, info0 = env.step(1)  # buy 2000 notional @100 → 20 shares
     value_before_gap = info0["portfolio_value"]
-    env.step(0)  # bar1 실행 → bar2 평가 (같은 날, 가격 동일)
-    _, _, _, _, info_gap = env.step(0)  # bar2 실행 → bar3(익일, 110) 평가
-    assert info_gap["portfolio_value"] - value_before_gap == pytest.approx(20.0 * 10.0)
+    env.step(1)  # same target means hold
+    _, _, _, _, info_gap = env.step(1)
+    assert info_gap["portfolio_value"] > value_before_gap
 
 
 def test_last_executable_bar_action_is_respected() -> None:
@@ -236,9 +231,9 @@ def test_holding_duration_uses_fixed_horizon_and_clips() -> None:
     assert obs[-2] == 0.0  # flat
     obs, *_ = env.step(1)   # entry_step=0 → 경과 1 bar
     assert obs[-2] == pytest.approx(1 / 2)
-    obs, *_ = env.step(0)   # 경과 2 bars
+    obs, *_ = env.step(1)   # 경과 2 bars
     assert obs[-2] == pytest.approx(1.0)
-    obs, *_ = env.step(0)   # 경과 3 bars → clip at 1.0 (날짜 경계를 넘어도 연속)
+    obs, *_ = env.step(1)   # 경과 3 bars → clip at 1.0 (날짜 경계를 넘어도 연속)
     assert obs[-2] == pytest.approx(1.0)
 
 

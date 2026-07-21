@@ -25,7 +25,7 @@ def test_buy_and_hold_scales_to_full_position_then_holds() -> None:
 
     actions = [agent.predict(None)[0] for _ in range(5)]
 
-    assert actions == [1, 1, 1, 0, 0]
+    assert actions == [3, 3, 3, 3, 3]
 
 
 def test_unknown_baseline_rejected() -> None:
@@ -41,7 +41,7 @@ def test_moving_average_baseline_uses_close_history() -> None:
         for price in (1.0, 2.0, 3.0)
     ]
 
-    assert actions == [0, 0, 1]
+    assert actions == [0, 0, 5]
 
 
 def test_make_rl_agent_applies_defaults_without_overwriting_kwargs() -> None:

@@ -77,7 +77,7 @@ def test_callback_records_requested_trading_metrics() -> None:
             units_held=0,
             forced_clear=True,
         )],
-        "actions": [2],
+        "actions": [0],
         "rewards": [0.4],
         "dones": [True],
     }
@@ -86,9 +86,9 @@ def test_callback_records_requested_trading_metrics() -> None:
 
     assert logger.records["portfolio/value_mean"] == pytest.approx(10_150.0)
     assert logger.records["portfolio/exposure_mean"] == pytest.approx(0.1)
-    assert logger.records["actions/add_rate"] == pytest.approx(0.5)
-    assert logger.records["actions/clear_rate"] == pytest.approx(0.5)
-    assert logger.records["actions/hold_rate"] == pytest.approx(0.0)
+    assert logger.records["actions/target_20pct_rate"] == pytest.approx(0.5)
+    assert logger.records["actions/target_0pct_rate"] == pytest.approx(0.5)
+    assert logger.records["actions/target_100pct_rate"] == pytest.approx(0.0)
     assert logger.records["cost/friction_sum"] == pytest.approx(5.0)
     assert logger.records["trading/forced_clear_count"] == pytest.approx(1.0)
     assert logger.records["returns/cumulative_return"] == pytest.approx(0.02)
@@ -104,7 +104,7 @@ def test_callback_records_requested_trading_metrics() -> None:
     assert daily_records["daily/portfolio_return"] == pytest.approx(0.02)
     assert daily_records["daily/benchmark_return"] == pytest.approx(0.01)
     assert daily_records["daily/friction_sum"] == pytest.approx(5.0)
-    assert daily_records["daily/add_rate"] == pytest.approx(0.5)
-    assert daily_records["daily/clear_rate"] == pytest.approx(0.5)
+    assert daily_records["daily/target_20pct_rate"] == pytest.approx(0.5)
+    assert daily_records["daily/target_0pct_rate"] == pytest.approx(0.5)
     assert daily_records["daily/forced_clear_count"] == pytest.approx(1.0)
     assert "daily/reward_base_return_mean" in daily_records

@@ -9,6 +9,8 @@ from typing import Any
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
+from env.trading_env import TARGET_ACTION_LABELS
+
 
 @dataclass(frozen=True)
 class ValidationSnapshot:
@@ -20,9 +22,12 @@ class ValidationSnapshot:
     max_drawdown: float
     turnover: float
     trade_count: int
-    hold_action_rate: float
-    add_action_rate: float
-    clear_action_rate: float
+    target_0pct_action_rate: float
+    target_20pct_action_rate: float
+    target_40pct_action_rate: float
+    target_60pct_action_rate: float
+    target_80pct_action_rate: float
+    target_100pct_action_rate: float
 
 
 class FullSplitValidationCallback(BaseCallback):
@@ -102,7 +107,7 @@ class FullSplitValidationCallback(BaseCallback):
         portfolio_values = [initial_value]
         traded_notional = 0.0
         trade_count = 0
-        action_counts = np.zeros(3, dtype=np.int64)
+        action_counts = np.zeros(len(TARGET_ACTION_LABELS), dtype=np.int64)
 
         done = False
         while not done:
@@ -133,9 +138,10 @@ class FullSplitValidationCallback(BaseCallback):
             max_drawdown=max_drawdown,
             turnover=float(traded_notional / max(initial_value, 1e-9)),
             trade_count=trade_count,
-            hold_action_rate=float(action_counts[0] / action_total),
-            add_action_rate=float(action_counts[1] / action_total),
-            clear_action_rate=float(action_counts[2] / action_total),
+            **{
+                f"{label}_action_rate": float(action_counts[index] / action_total)
+                for index, label in enumerate(TARGET_ACTION_LABELS)
+            },
         )
 
     def _env_attr(self, name: str) -> Any:

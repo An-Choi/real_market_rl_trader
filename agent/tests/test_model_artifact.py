@@ -13,7 +13,16 @@ import pytest
 from gymnasium import spaces
 
 from data.feature_engineer import FeatureEngineer
-from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha, load_artifact, load_metadata, make_artifact_id, save_artifact
+from models.artifact import (
+    EXPECTED_ACTION_LABELS,
+    ArtifactError,
+    ArtifactMetadata,
+    current_git_sha,
+    load_artifact,
+    load_metadata,
+    make_artifact_id,
+    save_artifact,
+)
 from models.rl_agent import RLAgent
 
 OBS_DIM = 13
@@ -25,7 +34,7 @@ class DummyTradingEnv(gym.Env):
     def __init__(self):
         super().__init__()
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
-        self.action_space = spaces.Discrete(3)
+        self.action_space = spaces.Discrete(6)
         self._t = 0
 
     def reset(self, seed=None, options=None):
@@ -62,7 +71,11 @@ def make_metadata(**overrides) -> ArtifactMetadata:
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         portfolio_state_fields=list(PORTFOLIO_STATE_FIELDS),
         observation_dim=len(FeatureEngineer.FEATURE_COLUMNS) + len(PORTFOLIO_STATE_FIELDS),
-        action_space={"type": "discrete", "n": 3, "labels": ["hold", "add_unit", "clear"]},
+        action_space={
+            "type": "discrete",
+            "n": len(EXPECTED_ACTION_LABELS),
+            "labels": list(EXPECTED_ACTION_LABELS),
+        },
         normalization=None,
         train_git_sha="testsha",
         train_data={"symbols": ["005930"], "start": "2025-05-22", "end": "2026-06-30"},
@@ -116,7 +129,11 @@ class TestArtifactMetadata:
 
     def test_action_space_n_labels_mismatch_raises(self):
         data = make_metadata().to_dict()
-        data["action_space"] = {"type": "discrete", "n": 4, "labels": ["hold", "add_unit", "clear"]}
+        data["action_space"] = {
+            "type": "discrete",
+            "n": 7,
+            "labels": list(EXPECTED_ACTION_LABELS),
+        }
         with pytest.raises(ArtifactError, match="action_space"):
             ArtifactMetadata.from_dict(data)
 
@@ -573,7 +590,11 @@ def test_load_artifact_v2_rejects_reversed_action_labels(
     data = dict(valid_metadata_dict)
     data["artifact_format_version"] = 2
     data["env_params"] = _v2_env_params()
-    data["action_space"] = {"type": "discrete", "n": 3, "labels": ["clear", "add_unit", "hold"]}
+    data["action_space"] = {
+        "type": "discrete",
+        "n": 6,
+        "labels": list(reversed(EXPECTED_ACTION_LABELS)),
+    }
     artifact_dir = tmp_path / "v2-artifact"
     artifact_dir.mkdir()
     (artifact_dir / "model.zip").write_bytes(b"")
@@ -590,7 +611,7 @@ def test_load_artifact_v2_rejects_reversed_action_labels(
         feature_schema_version = FeatureEngineer.FEATURE_SCHEMA_VERSION
 
         class action_space:
-            n = 3
+            n = 6
 
     with pytest.raises(ArtifactError, match="labels"):
         load_artifact(artifact_dir, env=MatchingEnv())
@@ -605,7 +626,11 @@ def test_load_artifact_rejects_reversed_action_labels_without_env(
     data = dict(valid_metadata_dict)
     data["artifact_format_version"] = 2
     data["env_params"] = _v2_env_params()
-    data["action_space"] = {"type": "discrete", "n": 3, "labels": ["clear", "add_unit", "hold"]}
+    data["action_space"] = {
+        "type": "discrete",
+        "n": 6,
+        "labels": list(reversed(EXPECTED_ACTION_LABELS)),
+    }
     artifact_dir = tmp_path / "v2-artifact-no-env"
     artifact_dir.mkdir()
     (artifact_dir / "model.zip").write_bytes(b"")

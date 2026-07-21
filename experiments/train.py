@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol", type=str, default=None)
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "cuda", "auto"),
+        default=None,
+        help="PyTorch device for PPO training; defaults to agent.device or cpu.",
+    )
     parser.add_argument("--split", choices=("all", "train", "validation", "test"), default="train")
     parser.add_argument(
         "--episode-days",
@@ -68,6 +74,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Select the saved model by deterministic full-validation return.",
     )
+    parser.add_argument("--raw-dir", type=Path, default=None)
+    parser.add_argument("--processed-dir", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -81,6 +89,7 @@ def main() -> None:
     symbol = args.symbol or config["data"]["symbol"]
     total_timesteps = args.total_timesteps or config["agent"]["total_timesteps"]
     seed = args.seed if args.seed is not None else config.get("seed", 42)
+    device = args.device or config["agent"].get("device", "cpu")
     tensorboard_config = config["agent"].setdefault("tensorboard", {})
     validation_config = config["agent"].setdefault("validation", {})
     if args.tensorboard is not None:
@@ -98,7 +107,12 @@ def main() -> None:
             Path(tensorboard_config["log_dir"]),
         )
 
-    data_loader = make_data_loader(project_root=PROJECT_ROOT, config=config)
+    data_loader = make_data_loader(
+        project_root=PROJECT_ROOT,
+        config=config,
+        raw_dir=args.raw_dir,
+        processed_dir=args.processed_dir,
+    )
     all_featured_data = load_feature_data(
         symbol=symbol,
         data_loader=data_loader,
@@ -119,6 +133,7 @@ def main() -> None:
         args.split,
         int(config["environment"].get("episode_days", 1)),
     )
+    logger.info("Training device: %s", device)
     if tensorboard_config.get("enabled", False):
         logger.info(
             "TensorBoard logs: %s (run name: %s)",
@@ -133,6 +148,7 @@ def main() -> None:
         config=config,
         total_timesteps=total_timesteps,
         seed=seed,
+        device=device,
         artifacts_dir=PROJECT_ROOT / args.artifacts_dir,
         tensorboard_log_dir=tensorboard_log_dir,
     )

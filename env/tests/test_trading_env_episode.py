@@ -73,11 +73,11 @@ def test_episode_does_not_cross_into_next_day(two_day_data: pd.DataFrame) -> Non
 def test_no_settlement_or_forced_trade_at_truncation(two_day_data: pd.DataFrame) -> None:
     env = make_env(two_day_data)
     env.reset(seed=0, options={"date": "2025-06-02"})
-    env.step(1)  # Add 1 Unit
+    env.step(1)  # Target 20%
     truncated = False
     info = {}
     while not truncated:
-        _, _, _, truncated, info = env.step(0)  # Hold until end
+        _, _, _, truncated, info = env.step(1)  # keep 20% target until end
     assert info["units_held"] == 1          # 강제청산 없음
     assert "forced_clear" not in info
 
@@ -115,7 +115,7 @@ def test_multi_day_episode_carries_position_overnight(two_day_data: pd.DataFrame
     env.step(1)
 
     for _ in range(4):
-        _, _, terminated, _, info = env.step(0)
+        _, _, terminated, _, info = env.step(1)
 
     assert terminated is False
     assert info["units_held"] == 1

@@ -10,7 +10,7 @@ data:
 
 environment:
   initial_cash: 10000.0
-  unit_fraction: 0.199  # friction 내고도 5 Unit 도달 가능하게 (0.20이면 수수료 4원 부족)
+  unit_fraction: 0.20   # legacy artifact field; execution now targets exact allocation weights
   max_units: 5
   episode_days: 20            # 학습 episode = 연속 20거래일
   nominal_bars_per_day: 64    # duration_horizon_bars = episode_days * nominal_bars_per_day
@@ -24,9 +24,12 @@ environment:
   reward_scale: 100.0
   reward_return_mode: log_return
   action_space:
-    0: Hold
-    1: Add 1 Unit
-    2: Clear
+    0: Target 0%
+    1: Target 20%
+    2: Target 40%
+    3: Target 60%
+    4: Target 80%
+    5: Target 100%
 
 friction:
   # 2026-07 실측·검증 기반 정밀 보정 (한투 API 기준):
@@ -47,6 +50,7 @@ agent:
   type: rl
   baseline_name: buy_and_hold
   rl_model_name: MaskablePPO
+  device: cpu
   total_timesteps: 300000
   normalization:
     enabled: true

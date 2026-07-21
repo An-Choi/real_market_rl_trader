@@ -71,6 +71,7 @@ def train_ppo_artifact(
     total_timesteps: int,
     seed: int,
     artifacts_dir: str | Path,
+    device: str | None = None,
     model_kwargs: dict[str, Any] | None = None,
     tensorboard_log_dir: str | Path | None = None,
 ) -> Path:
@@ -140,7 +141,7 @@ def train_ppo_artifact(
         model_name=config["agent"]["rl_model_name"],
         policy="MlpPolicy",
         seed=seed,
-        device="cpu",
+        device=device or config["agent"].get("device", "cpu"),
         model_kwargs=ppo_kwargs,
     )
     callbacks: list[Any] = []
@@ -189,6 +190,7 @@ def train_ppo_artifact(
         training_params={
             "total_timesteps": total_timesteps,
             "seed": seed,
+            "device": device or config["agent"].get("device", "cpu"),
             "ppo": ppo_kwargs,
             "normalization": normalization_config,
             "tensorboard": {

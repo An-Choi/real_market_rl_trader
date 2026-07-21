@@ -22,22 +22,22 @@ class AddOnceAgent:
         if not self.bought:
             self.bought = True
             return 1, None
-        return 0, None
+        return 1, None
 
 
 class ClearAtStepAgent:
-    """지정 step에서 Clear, 그 전에 한 번 Add."""
+    """지정 step에서 0% 목표, 그 전에는 20% 목표."""
 
     def __init__(self, clear_step: int) -> None:
         self.clear_step = clear_step
         self.step = 0
 
     def predict(self, observation):
-        action = 0
+        action = 1
         if self.step == 0:
             action = 1
         elif self.step == self.clear_step:
-            action = 2
+            action = 0
         self.step += 1
         return action, None
 
