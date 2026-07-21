@@ -35,12 +35,56 @@ def _normalize_for_compare(df: pd.DataFrame, column_order: list[str], time_col: 
     return df[column_order].sort_values(time_col).reset_index(drop=True)
 
 
-def _shrunk_minute_dates(existing: pd.DataFrame, new: pd.DataFrame) -> list[date]:
-    """Return dates whose row count is lower in the new minute data."""
+# 거래일 달력 없이 커버리지를 판단하므로 연휴 허용 오차를 둔다.
+# 내부 갭 9일: 최장 연휴(추석)가 캘린더 8일 갭까지 만든다.
+_HEAD_TOLERANCE_DAYS = 7
+_TAIL_TOLERANCE_DAYS = 7
+_MAX_INTERNAL_GAP_DAYS = 9
+
+
+def _is_partition_complete(days: list[date], window_start: date, window_end: date) -> bool:
+    """True if the partition's trading days plausibly cover [window_start, window_end].
+
+    부분 수집으로 멈춘 파티션(예: 월초 이틀만 존재)을 '완료'로 오인해 영구
+    스킵하는 것을 막는다. head/tail 결손과 월 중간의 큰 갭을 모두 검사한다.
+    """
+    if not days:
+        return False
+    ordered = sorted(days)
+    if (ordered[0] - window_start).days > _HEAD_TOLERANCE_DAYS:
+        return False
+    if (window_end - ordered[-1]).days > _TAIL_TOLERANCE_DAYS:
+        return False
+    return all(
+        (later - earlier).days <= _MAX_INTERNAL_GAP_DAYS
+        for earlier, later in zip(ordered, ordered[1:])
+    )
+
+
+def _merge_minute_days(
+    existing: pd.DataFrame, new: pd.DataFrame
+) -> tuple[pd.DataFrame, list[date]]:
+    """Per-day merge of a refetched minute month into the existing partition.
+
+    행이 줄어든 날과 새 응답에 아예 없는 날(rolling 경계 잘림)은 기존 행을
+    보존하고, 나머지 날은 새 데이터를 채택한다. 하루의 결손이 그 달 전체
+    갱신을 막지 않도록 하기 위한 것(월 단위 all-or-nothing 금지).
+
+    Returns (merged, preserved_dates) — preserved_dates는 기존 행을 지킨 날짜들.
+    """
     old_counts = existing["Timestamp"].dt.date.value_counts()
     new_counts = new["Timestamp"].dt.date.value_counts()
     aligned = new_counts.reindex(old_counts.index, fill_value=0)
-    return old_counts.index[(aligned < old_counts)].tolist()
+    preserved = sorted(old_counts.index[aligned < old_counts])
+    merged = pd.concat(
+        [
+            existing[existing["Timestamp"].dt.date.isin(preserved)],
+            new[~new["Timestamp"].dt.date.isin(preserved)],
+        ],
+        ignore_index=True,
+    )
+    merged = merged[new.columns.tolist()].sort_values("Timestamp").reset_index(drop=True)
+    return merged, preserved
 
 
 @dataclass
@@ -137,9 +181,11 @@ class DataCollector:
     ) -> list[str]:
         """Fetch minute data month-by-month, saving each month immediately.
 
-        Crash-safe and resumable: a month whose Parquet already exists is
-        skipped unless ``overwrite`` is True or its label is in
-        ``overwrite_partitions``. Returns labels actually written.
+        Crash-safe and resumable: a month whose Parquet already exists AND
+        plausibly covers its window is skipped unless ``overwrite`` is True or
+        its label is in ``overwrite_partitions``. Incomplete partitions are
+        resumed, and refetches merge per-day (shrunk days keep existing rows).
+        Returns labels actually written.
         """
         forced = overwrite_partitions or set()
         saved: list[str] = []
@@ -147,28 +193,32 @@ class DataCollector:
             partition = f"{w_start.year:04d}-{w_start.month:02d}"
             path = self.raw_data_dir / symbol / "1m" / f"{partition}.parquet"
             if path.exists() and not overwrite and partition not in forced:
-                logging.info("Skip existing minute partition: %s", path)
-                continue
+                existing_days = (
+                    pd.read_parquet(path, columns=["Timestamp"])["Timestamp"]
+                    .dt.date.unique().tolist()
+                )
+                if _is_partition_complete(existing_days, w_start, w_end):
+                    logging.info("Skip existing minute partition: %s", path)
+                    continue
+                logging.info("Resuming incomplete minute partition: %s", path)
             df = fetcher.fetch_minute_range(
                 start=w_start, end=w_end, max_pages_per_day=max_pages_per_day
             )
             if df.empty:
                 continue
-            if path.exists() and not overwrite:
-                existing = pd.read_parquet(path)
-                shrunk = _shrunk_minute_dates(existing, df)
-                if shrunk:
-                    logging.warning(
-                        "[%s] minute partition %s: per-day rows shrank for %s; keeping existing",
-                        symbol, partition, shrunk,
-                    )
-                    continue
             if overwrite:
                 # 기존 --overwrite 전체 재수집 경로: 무조건 저장 (기존 동작 불변)
                 self.save_raw_parquet(df, symbol=symbol, interval="1m", partition=partition)
                 written: Path | None = path
             else:
-                # 신규 파티션 및 overwrite_partitions 경로: semantic 비교 후 저장
+                if path.exists():
+                    existing = pd.read_parquet(path)
+                    df, preserved = _merge_minute_days(existing, df)
+                    if preserved:
+                        logging.warning(
+                            "[%s] minute partition %s: kept existing rows for %s (refetch shrank)",
+                            symbol, partition, [str(day) for day in preserved],
+                        )
                 written = self.save_if_changed(
                     df, symbol=symbol, interval="1m", partition=partition, time_col="Timestamp"
                 )
@@ -187,8 +237,8 @@ class DataCollector:
     ) -> dict[str, str]:
         """Explicit full-month recovery windows, independent of the rolling range.
 
-        Guards against rolling-boundary truncation: never replaces an existing
-        partition with strictly fewer unique trading days.
+        Guards against rolling-boundary truncation per day: dates whose refetch
+        shrank (or vanished) keep their existing rows, all other dates update.
         """
         today = today or date.today()
         results: dict[str, str] = {}
@@ -208,18 +258,55 @@ class DataCollector:
                 results[label] = "unavailable"
                 continue
             path = self.raw_data_dir / symbol / "1m" / f"{label}.parquet"
+            preserved: list[date] = []
             if path.exists():
                 existing = pd.read_parquet(path)
-                shrunk = _shrunk_minute_dates(existing, df)
-                if shrunk:
+                df, preserved = _merge_minute_days(existing, df)
+                if preserved:
                     logging.warning(
-                        "[%s] force month %s: per-day rows shrank for %s; keeping existing",
-                        symbol, label, shrunk,
+                        "[%s] force month %s: kept existing rows for %s (refetch shrank)",
+                        symbol, label, [str(day) for day in preserved],
                     )
-                    results[label] = "kept_existing"
-                    continue
             written = self.save_if_changed(
                 df, symbol=symbol, interval="1m", partition=label, time_col="Timestamp"
             )
-            results[label] = "replaced" if written is not None else "unchanged"
+            if written is not None:
+                results[label] = "replaced"
+            else:
+                results[label] = "kept_existing" if preserved else "unchanged"
         return results
+
+    def audit_minute_coverage(self, symbol: str, today: date | None = None) -> list[str]:
+        """Scan saved 1m partitions for coverage holes.
+
+        부분 수집으로 멈춘 월, 월 중간의 큰 갭, 아예 빠진 월 파일을 경고
+        문자열로 반환한다(문제 없으면 빈 리스트). 백필/일일 수집 후 호출해서
+        구멍이 조용히 고착되기 전에 드러내는 용도.
+        """
+        today = today or date.today()
+        directory = self.raw_data_dir / symbol / "1m"
+        labels = sorted(path.stem for path in directory.glob("*.parquet"))
+        warnings: list[str] = []
+        for index, label in enumerate(labels):
+            days = sorted(
+                pd.read_parquet(directory / f"{label}.parquet", columns=["Timestamp"])
+                ["Timestamp"].dt.date.unique()
+            )
+            month_start = date(int(label[:4]), int(label[5:7]), 1)
+            # 첫 파티션은 rolling 수집 시작점이라 월 중간 시작이 정상이다.
+            window_start = days[0] if index == 0 else month_start
+            window_end = min(_month_end(month_start), today)
+            if not _is_partition_complete(days, window_start, window_end):
+                warnings.append(
+                    f"{label}: incomplete partition ({days[0]}..{days[-1]}, {len(days)} days)"
+                )
+        if labels:
+            first = date(int(labels[0][:4]), int(labels[0][5:7]), 1)
+            last = date(int(labels[-1][:4]), int(labels[-1][5:7]), 1)
+            expected = {
+                f"{w_start.year:04d}-{w_start.month:02d}"
+                for w_start, _ in _month_windows(first, last)
+            }
+            for missing in sorted(expected.difference(labels)):
+                warnings.append(f"{missing}: partition file missing")
+        return warnings

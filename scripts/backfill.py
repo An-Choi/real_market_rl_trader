@@ -158,8 +158,8 @@ def main() -> None:
     today = date.today()
 
     if args.refresh_current:
-        _write_github_summary("| symbol | daily | minute saved | force | today bars |")
-        _write_github_summary("|---|---|---|---|---|")
+        _write_github_summary("| symbol | daily | minute saved | force | today bars | coverage |")
+        _write_github_summary("|---|---|---|---|---|---|")
 
     for symbol in symbols:
         fetcher = KISHistoricalFetcher(
@@ -181,13 +181,17 @@ def main() -> None:
                 if force_months else {}
             )
             bars = _today_bar_count(args.raw_dir, symbol, today)
+            coverage = collector.audit_minute_coverage(symbol=symbol, today=today)
+            for warning in coverage:
+                logging.warning("[%s] coverage: %s", symbol, warning)
             line = (f"| {symbol} | daily={daily_status} | minute={saved or '-'} "
-                    f"| force={force_results or '-'} | today_bars={_today_bar_summary(bars)} |")
+                    f"| force={force_results or '-'} | today_bars={_today_bar_summary(bars)} "
+                    f"| coverage={'⚠️ ' + '; '.join(coverage) if coverage else 'ok'} |")
             logging.info("summary: %s", line)
             _write_github_summary(line)
             continue
 
-        # 기존 일회성 백필 경로 (불변)
+        # 기존 일회성 백필 경로
         if not args.skip_daily:
             _backfill_daily(collector, fetcher, symbol, daily_start, daily_end,
                             args.raw_dir, args.overwrite)
@@ -198,6 +202,13 @@ def main() -> None:
                 start=minute_start, end=minute_end, overwrite=args.overwrite,
             )
             logging.info("[%s] minute partitions saved: %d", symbol, len(saved))
+        if force_months:
+            force_results = collector.force_month_refetch(
+                fetcher, symbol=symbol, months=force_months
+            )
+            logging.info("[%s] force months: %s", symbol, force_results)
+        for warning in collector.audit_minute_coverage(symbol=symbol, today=today):
+            logging.warning("[%s] coverage: %s", symbol, warning)
 
 
 if __name__ == "__main__":
