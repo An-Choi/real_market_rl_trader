@@ -175,11 +175,14 @@ def test_backfill_minute_monthly_skips_existing_unless_overwrite(tmp_path: Path)
     from unittest.mock import Mock
     from pipeline.data_collector import DataCollector
 
-    # Pre-create the 2025-06 partition with a sentinel.
+    # Pre-create a complete-looking 2025-06 partition with a sentinel.
     june_dir = tmp_path / "005930" / "1m"
     june_dir.mkdir(parents=True)
-    sentinel = pd.DataFrame({"Timestamp": [pd.Timestamp("2025-06-02 09:00", tz="Asia/Seoul")],
-                             "Close": [999.0]})
+    sentinel = pd.DataFrame({
+        "Timestamp": [pd.Timestamp(f"2025-06-{d:02d} 09:00", tz="Asia/Seoul")
+                      for d in (2, 9, 16, 23, 30)],
+        "Close": [999.0] * 5,
+    })
     sentinel.to_parquet(june_dir / "2025-06.parquet", index=False)
 
     fetcher = Mock()
@@ -239,11 +242,11 @@ def test_save_if_changed_writes_on_content_or_dtype_change(tmp_path: Path) -> No
 def test_backfill_minute_monthly_overwrite_partitions_selective(tmp_path: Path) -> None:
     from unittest.mock import Mock
 
-    # 2025-06, 2025-07 파티션이 이미 존재
+    # 2025-06(완전한 형태), 2025-07 파티션이 이미 존재
     d = tmp_path / "005930" / "1m"
     d.mkdir(parents=True)
-    for part, day in (("2025-06", date(2025, 6, 2)), ("2025-07", date(2025, 7, 1))):
-        _minute_df_for(day).to_parquet(d / f"{part}.parquet", index=False)
+    _minute_df_days(2025, 6, [2, 9, 16, 23, 30]).to_parquet(d / "2025-06.parquet", index=False)
+    _minute_df_for(date(2025, 7, 1)).to_parquet(d / "2025-07.parquet", index=False)
 
     fetcher = Mock()
     # 7월 재수집 결과는 기존 일자를 보존하면서 새 거래일이 추가된 상황
@@ -287,6 +290,122 @@ def test_backfill_minute_monthly_forced_partition_keeps_existing_on_shrink(
     assert saved == []
     kept = pd.read_parquet(d / "2025-07.parquet")
     pd.testing.assert_frame_equal(kept, existing)
+
+
+def test_backfill_minute_monthly_forced_month_merges_per_day(tmp_path: Path) -> None:
+    """줄어든 날 하나가 그 달 전체 갱신을 막으면 안 된다 (034220 7월 동결 재발 방지).
+
+    줄어든 날은 기존 행을 보존하고, 나머지 날과 새 날짜는 새 데이터로 갱신한다.
+    """
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1m"
+    d.mkdir(parents=True)
+    # 기존: 7/8 1행, 7/9 2행
+    existing = pd.concat([
+        _minute_df_days(2026, 7, [8, 9]),
+        _minute_df_days(2026, 7, [9]).assign(
+            Timestamp=lambda x: x["Timestamp"] + pd.Timedelta(minutes=1)),
+    ]).sort_values("Timestamp").reset_index(drop=True)
+    existing.to_parquet(d / "2026-07.parquet", index=False)
+
+    fetcher = Mock()  # 재조회: 7/9는 1행으로 줄고(사후 정정) 7/10이 새로 도착
+    fetcher.fetch_minute_range.return_value = _minute_df_days(2026, 7, [8, 9, 10])
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    saved = collector.backfill_minute_monthly(
+        fetcher=fetcher, symbol="005930", start=date(2026, 7, 1), end=date(2026, 7, 10),
+        overwrite_partitions={"2026-07"},
+    )
+
+    assert saved == ["2026-07"]                                    # 월 전체 동결 없음
+    merged = pd.read_parquet(d / "2026-07.parquet")
+    per_day = merged["Timestamp"].dt.date.value_counts()
+    assert per_day[date(2026, 7, 9)] == 2                          # 줄어든 날은 기존 보존
+    assert per_day[date(2026, 7, 10)] == 1                         # 새 날짜는 추가됨
+
+
+def test_backfill_minute_monthly_resumes_incomplete_past_month(tmp_path: Path) -> None:
+    """부분 수집된 과거 월은 '존재하니 스킵'이 아니라 재개해야 한다 (005930 6월 구멍 재발 방지)."""
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1m"
+    d.mkdir(parents=True)
+    _minute_df_days(2026, 6, [1, 2]).to_parquet(d / "2026-06.parquet", index=False)
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.side_effect = lambda start, end, max_pages_per_day: (
+        _minute_df_days(2026, 6, [1, 2, 15, 30]) if start.month == 6
+        else _minute_df_for(start)
+    )
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    saved = collector.backfill_minute_monthly(
+        fetcher=fetcher, symbol="005930", start=date(2026, 6, 1), end=date(2026, 7, 4),
+    )
+
+    assert "2026-06" in saved
+    merged = pd.read_parquet(d / "2026-06.parquet")
+    assert merged["Timestamp"].dt.date.nunique() == 4
+
+
+def test_is_partition_complete_full_and_truncated() -> None:
+    from pipeline.data_collector import _is_partition_complete
+
+    # 월말이 주말·연휴로 비어도(≤7일) 완전한 달로 본다
+    full = [date(2025, 6, d) for d in range(2, 28)]
+    assert _is_partition_complete(full, date(2025, 6, 1), date(2025, 6, 30))
+
+    # 6월 구멍 시나리오: 이틀만 있는 과거 월은 불완전
+    assert not _is_partition_complete(
+        [date(2026, 6, 1), date(2026, 6, 2)], date(2026, 6, 1), date(2026, 6, 30)
+    )
+
+
+def test_is_partition_complete_head_and_internal_gap() -> None:
+    from pipeline.data_collector import _is_partition_complete
+
+    # 월초가 7일 넘게 비면 불완전
+    late_head = [date(2025, 6, d) for d in range(12, 31)]
+    assert not _is_partition_complete(late_head, date(2025, 6, 1), date(2025, 6, 30))
+
+    # 월 중간 10일+ 갭은 불완전
+    gapped = [date(2025, 10, 1), date(2025, 10, 2)] + [
+        date(2025, 10, d) for d in range(14, 31)
+    ]
+    assert not _is_partition_complete(gapped, date(2025, 10, 1), date(2025, 10, 31))
+
+    # 추석급 연휴(캘린더 8일 갭: 10/2 -> 10/10)는 정상
+    chuseok = [date(2025, 10, 1), date(2025, 10, 2)] + [
+        date(2025, 10, d) for d in range(10, 31)
+    ]
+    assert _is_partition_complete(chuseok, date(2025, 10, 1), date(2025, 10, 31))
+
+
+def test_audit_minute_coverage_flags_hole_and_missing_month(tmp_path: Path) -> None:
+    d = tmp_path / "005930" / "1m"
+    d.mkdir(parents=True)
+    _minute_df_days(2026, 4, list(range(1, 31))).to_parquet(d / "2026-04.parquet", index=False)
+    # 2026-05 파일 자체가 없음 + 2026-06은 이틀만 존재
+    _minute_df_days(2026, 6, [1, 2]).to_parquet(d / "2026-06.parquet", index=False)
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    warnings = collector.audit_minute_coverage(symbol="005930", today=date(2026, 7, 21))
+
+    assert any("2026-05" in w for w in warnings)                   # 빠진 월 파일
+    assert any("2026-06" in w for w in warnings)                   # 불완전한 월
+
+
+def test_audit_minute_coverage_clean_data_is_silent(tmp_path: Path) -> None:
+    d = tmp_path / "005930" / "1m"
+    d.mkdir(parents=True)
+    # 첫 파티션은 rolling 시작이라 월 중간 시작이 정상
+    _minute_df_days(2026, 5, list(range(20, 32))).to_parquet(d / "2026-05.parquet", index=False)
+    _minute_df_days(2026, 6, list(range(1, 31))).to_parquet(d / "2026-06.parquet", index=False)
+    _minute_df_days(2026, 7, list(range(1, 20))).to_parquet(d / "2026-07.parquet", index=False)
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    assert collector.audit_minute_coverage(symbol="005930", today=date(2026, 7, 21)) == []
 
 
 def test_backfill_minute_monthly_unchanged_refetch_not_reported(tmp_path: Path) -> None:
@@ -449,7 +568,7 @@ def test_force_month_refetch_row_count_guard_keeps_existing(tmp_path: Path) -> N
     assert len(pd.read_parquet(d / "2025-07.parquet")) == 4
 
 
-def test_force_month_refetch_per_day_guard_rejects_redistribution(tmp_path: Path) -> None:
+def test_force_month_refetch_merges_per_day_redistribution(tmp_path: Path) -> None:
     from unittest.mock import Mock
 
     d = tmp_path / "005930" / "1m"
@@ -478,7 +597,12 @@ def test_force_month_refetch_per_day_guard_rejects_redistribution(tmp_path: Path
     result = collector.force_month_refetch(fetcher, symbol="005930", months=["2025-07"],
                                            today=date(2026, 7, 6))
 
-    assert result == {"2025-07": "kept_existing"}                  # 총 row 같아도 7/1 감소면 거부
+    # 일 단위 병합: 줄어든 7/1은 기존 2행 보존, 늘어난 7/2는 새 3행 채택
+    assert result == {"2025-07": "replaced"}
+    merged = pd.read_parquet(d / "2025-07.parquet")
+    per_day = merged["Timestamp"].dt.date.value_counts()
+    assert per_day[date(2025, 7, 1)] == 2
+    assert per_day[date(2025, 7, 2)] == 3
 
 
 def test_force_month_refetch_future_month_is_invalid(tmp_path: Path) -> None:
