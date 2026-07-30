@@ -9,22 +9,48 @@ import numpy as np
 import pandas as pd
 
 
-SUPPORTED_BASELINES = ("buy_and_hold", "random", "ma_crossover")
+SUPPORTED_BASELINES = (
+    "cash",
+    "static_20pct",
+    "static_40pct",
+    "static_60pct",
+    "static_80pct",
+    "buy_and_hold",
+    "volatility_scaled",
+    "random",
+    "ma_crossover",
+)
 
 
-class BuyAndHoldAgent:
+@dataclass(frozen=True)
+class StaticAllocationAgent:
+    """Baseline that continuously targets one fixed allocation."""
+
+    target_units: int
+
+    def __post_init__(self) -> None:
+        if self.target_units < 0:
+            raise ValueError("target_units must be non-negative")
+
+    def reset(self) -> None:
+        """Static allocation has no internal state."""
+
+    def predict(
+        self,
+        observation: Any,
+        market_row: pd.Series | None = None,
+    ) -> tuple[int, dict]:
+        """Return the configured target on every step."""
+        return self.target_units, {}
+
+
+class BuyAndHoldAgent(StaticAllocationAgent):
     """Baseline that selects 100% allocation and holds to the end."""
 
     def __init__(self, target_units: int = 5) -> None:
         if target_units <= 0:
             raise ValueError("target_units must be positive")
-        self.target_units = target_units
-    def reset(self) -> None:
-        """Buy-and-hold has no internal state."""
-
-    def predict(self, observation: Any, market_row: pd.Series | None = None) -> tuple[int, dict]:
-        """Repeated 100% targets are no-ops after the initial allocation."""
-        return self.target_units, {}
+        super().__init__(target_units=target_units)
 
 
 @dataclass
@@ -77,6 +103,49 @@ class RandomAgent:
 
 
 @dataclass
+class VolatilityScaledAgent:
+    """Causal inverse-volatility allocation using a rolling median target."""
+
+    volatility_col: str = "realized_vol_12"
+    window: int = 20
+    max_units: int = 5
+
+    def __post_init__(self) -> None:
+        if self.window <= 0:
+            raise ValueError("window must be positive")
+        if self.max_units <= 0:
+            raise ValueError("max_units must be positive")
+        self._volatility: list[float] = []
+
+    def reset(self) -> None:
+        """Reset causal volatility history for a fresh evaluation."""
+        self._volatility = []
+
+    def predict(
+        self,
+        observation: Any,
+        market_row: pd.Series | None = None,
+    ) -> tuple[int, dict]:
+        """Reduce exposure when current volatility exceeds its recent median."""
+        if market_row is None or self.volatility_col not in market_row:
+            return 0, {"reason": "missing_volatility"}
+        volatility = float(market_row[self.volatility_col])
+        if not np.isfinite(volatility) or volatility < 0:
+            return 0, {"reason": "invalid_volatility"}
+
+        self._volatility.append(volatility)
+        history = self._volatility[-self.window:]
+        positive = [value for value in history if value > 0]
+        if not positive:
+            return self.max_units, {"reason": "zero_volatility"}
+
+        target_volatility = float(np.median(positive))
+        allocation = min(target_volatility / max(volatility, 1e-12), 1.0)
+        target_units = int(np.clip(np.rint(allocation * self.max_units), 0, self.max_units))
+        return target_units, {}
+
+
+@dataclass
 class RuleBasedRegimeAgent:
     """Simple rule-based agent using regime feature proxies."""
 
@@ -105,8 +174,16 @@ def make_baseline_agent(
     max_units: int = 5,
 ) -> Any:
     """Create a supported rule-based baseline policy by experiment name."""
+    if name == "cash":
+        return StaticAllocationAgent(target_units=0)
+    if name.startswith("static_") and name.endswith("pct"):
+        percentage = int(name.removeprefix("static_").removesuffix("pct"))
+        target_units = round((percentage / 100) * max_units)
+        return StaticAllocationAgent(target_units=target_units)
     if name == "buy_and_hold":
         return BuyAndHoldAgent(target_units=max_units)
+    if name == "volatility_scaled":
+        return VolatilityScaledAgent(max_units=max_units)
     if name == "random":
         return RandomAgent(seed=seed, action_count=max_units + 1)
     if name == "ma_crossover":

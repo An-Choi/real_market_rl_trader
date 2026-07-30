@@ -22,6 +22,30 @@ class WalkForwardSplit:
     days: int
 
 
+@dataclass(frozen=True)
+class ExpandingWalkForwardFold:
+    """One expanding-train, fixed-validation, forward-test fold."""
+
+    index: int
+    train: pd.DataFrame
+    validation: pd.DataFrame
+    test: pd.DataFrame
+
+    def describe(self, timestamp_col: str = "Timestamp") -> dict[str, object]:
+        """Return JSON-serializable date boundaries and row/day counts."""
+        payload: dict[str, object] = {"fold": self.index}
+        for name in ("train", "validation", "test"):
+            frame = getattr(self, name)
+            timestamps = pd.to_datetime(frame[timestamp_col])
+            payload[name] = {
+                "start": str(timestamps.min().date()),
+                "end": str(timestamps.max().date()),
+                "rows": int(len(frame)),
+                "days": int(timestamps.dt.date.nunique()),
+            }
+        return payload
+
+
 def _trading_days(data: pd.DataFrame, timestamp_col: str) -> pd.Series:
     if timestamp_col not in data:
         raise ValueError(f"missing timestamp column: {timestamp_col}")
@@ -98,3 +122,59 @@ def describe_walk_forward_splits(
             )
         )
     return descriptions
+
+
+def generate_expanding_walk_forward_folds(
+    data: pd.DataFrame,
+    *,
+    n_folds: int = 3,
+    validation_days: int | None = None,
+    test_days: int | None = None,
+    timestamp_col: str = "Timestamp",
+) -> list[ExpandingWalkForwardFold]:
+    """Build non-overlapping forward tests with an expanding training window.
+
+    Defaults reserve roughly 10% of all trading days for each validation and
+    test block. Each next fold absorbs the previous validation and test period
+    into training, then advances to a fresh validation and test block.
+    """
+    if n_folds <= 0:
+        raise ValueError("n_folds must be positive")
+    if data.empty:
+        raise ValueError("walk-forward data must not be empty")
+
+    sorted_data = data.sort_values(timestamp_col).reset_index(drop=True)
+    days = _trading_days(sorted_data, timestamp_col)
+    unique_days = pd.Index(days.drop_duplicates())
+    n_days = len(unique_days)
+    default_window = max(1, n_days // 10)
+    validation_days = validation_days or default_window
+    test_days = test_days or default_window
+    if validation_days <= 0 or test_days <= 0:
+        raise ValueError("validation_days and test_days must be positive")
+
+    initial_train_days = n_days - validation_days - n_folds * test_days
+    if initial_train_days < 3:
+        raise ValueError(
+            "not enough trading days for requested folds: "
+            f"{n_days} days, {n_folds} folds, "
+            f"{validation_days} validation days, {test_days} test days"
+        )
+
+    folds: list[ExpandingWalkForwardFold] = []
+    for fold_index in range(n_folds):
+        train_end = initial_train_days + fold_index * test_days
+        validation_end = train_end + validation_days
+        test_end = validation_end + test_days
+        train_dates = unique_days[:train_end]
+        validation_dates = unique_days[train_end:validation_end]
+        test_dates = unique_days[validation_end:test_end]
+        folds.append(
+            ExpandingWalkForwardFold(
+                index=fold_index + 1,
+                train=sorted_data.loc[days.isin(train_dates)].reset_index(drop=True),
+                validation=sorted_data.loc[days.isin(validation_dates)].reset_index(drop=True),
+                test=sorted_data.loc[days.isin(test_dates)].reset_index(drop=True),
+            )
+        )
+    return folds

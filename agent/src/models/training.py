@@ -115,6 +115,13 @@ def train_ppo_artifact(
             use_action_masks=config["agent"]["rl_model_name"] == "MaskablePPO",
             seed=int(validation_config.get("seed", seed)),
             deterministic=bool(validation_config.get("deterministic", True)),
+            selection_segments=int(validation_config.get("selection_segments", 3)),
+            drawdown_penalty_weight=float(
+                validation_config.get("drawdown_penalty_weight", 0.25)
+            ),
+            turnover_penalty_weight=float(
+                validation_config.get("turnover_penalty_weight", 0.001)
+            ),
             verbose=int(validation_config.get("verbose", 1)),
         )
 

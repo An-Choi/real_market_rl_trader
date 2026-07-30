@@ -91,7 +91,12 @@ def test_maskable_training_selects_validation_checkpoint_and_reloads(
     assert metadata.algo == "MaskablePPO"
     assert validation["evaluation_count"] >= 3
     assert validation["best_timestep"] in {0, 8, 16}
-    assert validation["best"]["total_return"] >= validation["latest"]["total_return"]
+    assert validation["metric"] == "stability_score"
+    assert validation["selection_segments"] == 3
+    assert (
+        validation["best"]["selection_score"]
+        >= validation["latest"]["selection_score"]
+    )
 
     env = build_training_environment(
         featured_data=validation_data,

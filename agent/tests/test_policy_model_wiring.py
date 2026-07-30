@@ -9,13 +9,28 @@ from policies import (
     BuyAndHoldAgent,
     MovingAverageCrossoverAgent,
     RandomAgent,
+    StaticAllocationAgent,
+    VolatilityScaledAgent,
     make_baseline_agent,
 )
 
 
 def test_make_baseline_agent_by_name() -> None:
-    assert SUPPORTED_BASELINES == ("buy_and_hold", "random", "ma_crossover")
+    assert SUPPORTED_BASELINES == (
+        "cash",
+        "static_20pct",
+        "static_40pct",
+        "static_60pct",
+        "static_80pct",
+        "buy_and_hold",
+        "volatility_scaled",
+        "random",
+        "ma_crossover",
+    )
+    assert isinstance(make_baseline_agent("cash"), StaticAllocationAgent)
+    assert make_baseline_agent("static_80pct").target_units == 4
     assert isinstance(make_baseline_agent("buy_and_hold"), BuyAndHoldAgent)
+    assert isinstance(make_baseline_agent("volatility_scaled"), VolatilityScaledAgent)
     assert isinstance(make_baseline_agent("random", seed=1), RandomAgent)
     assert isinstance(make_baseline_agent("ma_crossover"), MovingAverageCrossoverAgent)
 
@@ -26,6 +41,18 @@ def test_buy_and_hold_scales_to_full_position_then_holds() -> None:
     actions = [agent.predict(None)[0] for _ in range(5)]
 
     assert actions == [3, 3, 3, 3, 3]
+
+
+def test_volatility_scaled_baseline_reduces_exposure_when_volatility_spikes() -> None:
+    agent = VolatilityScaledAgent(window=3, max_units=5)
+
+    actions = [
+        agent.predict(None, market_row=pd.Series({"realized_vol_12": volatility}))[0]
+        for volatility in (0.01, 0.01, 0.01, 0.05)
+    ]
+
+    assert actions[:3] == [5, 5, 5]
+    assert actions[-1] == 1
 
 
 def test_unknown_baseline_rejected() -> None:

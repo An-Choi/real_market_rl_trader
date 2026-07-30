@@ -6,6 +6,8 @@ from policies.baseline_agents import (
     MovingAverageCrossoverAgent,
     RandomAgent,
     RuleBasedRegimeAgent,
+    StaticAllocationAgent,
+    VolatilityScaledAgent,
     make_baseline_agent,
 )
 from policies.evaluation import (
@@ -28,6 +30,8 @@ __all__ = [
     "MovingAverageCrossoverAgent",
     "RandomAgent",
     "RuleBasedRegimeAgent",
+    "StaticAllocationAgent",
+    "VolatilityScaledAgent",
     "build_backtest_environment",
     "compare_baselines",
     "compare_baselines_multi_seed",

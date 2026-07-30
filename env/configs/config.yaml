@@ -64,6 +64,10 @@ agent:
     eval_freq: 25000
     deterministic: true
     seed: 42
+    # Select checkpoints on median subperiod return, with mild risk/cost penalties.
+    selection_segments: 3
+    drawdown_penalty_weight: 0.25
+    turnover_penalty_weight: 0.001
     verbose: 1
   ppo:
     learning_rate: 0.0003

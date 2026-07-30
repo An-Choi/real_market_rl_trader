@@ -3,7 +3,11 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from models.walk_forward import describe_walk_forward_splits, split_by_trading_day
+from models.walk_forward import (
+    describe_walk_forward_splits,
+    generate_expanding_walk_forward_folds,
+    split_by_trading_day,
+)
 
 
 def _daily_rows() -> pd.DataFrame:
@@ -47,3 +51,48 @@ def test_walk_forward_requires_enough_days() -> None:
 
     with pytest.raises(ValueError, match="at least 3 trading days"):
         split_by_trading_day(data, split="train")
+
+
+def test_expanding_walk_forward_uses_fresh_non_overlapping_tests() -> None:
+    data = _daily_rows()
+
+    folds = generate_expanding_walk_forward_folds(
+        data,
+        n_folds=3,
+        validation_days=1,
+        test_days=2,
+    )
+
+    assert [fold.train["Timestamp"].dt.date.nunique() for fold in folds] == [3, 5, 7]
+    assert [fold.validation["Timestamp"].dt.date.nunique() for fold in folds] == [1, 1, 1]
+    assert [fold.test["Timestamp"].dt.date.nunique() for fold in folds] == [2, 2, 2]
+    test_dates = [set(fold.test["Timestamp"].dt.date) for fold in folds]
+    assert test_dates[0].isdisjoint(test_dates[1])
+    assert test_dates[1].isdisjoint(test_dates[2])
+    assert folds[0].test["Timestamp"].max() < folds[1].test["Timestamp"].min()
+
+
+def test_expanding_walk_forward_description_is_json_ready() -> None:
+    fold = generate_expanding_walk_forward_folds(
+        _daily_rows(),
+        n_folds=1,
+        validation_days=2,
+        test_days=2,
+    )[0]
+
+    description = fold.describe()
+
+    assert description["fold"] == 1
+    assert description["train"]["days"] == 6
+    assert description["validation"]["start"] == "2025-06-07"
+    assert description["test"]["end"] == "2025-06-10"
+
+
+def test_expanding_walk_forward_rejects_impossible_windows() -> None:
+    with pytest.raises(ValueError, match="not enough trading days"):
+        generate_expanding_walk_forward_folds(
+            _daily_rows(),
+            n_folds=4,
+            validation_days=2,
+            test_days=2,
+        )

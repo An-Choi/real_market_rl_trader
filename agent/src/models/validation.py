@@ -17,6 +17,9 @@ class ValidationSnapshot:
     """Metrics from one deterministic pass over the validation split."""
 
     timestep: int
+    selection_score: float
+    median_segment_return: float
+    worst_segment_return: float
     total_return: float
     final_portfolio_value: float
     max_drawdown: float
@@ -41,6 +44,9 @@ class FullSplitValidationCallback(BaseCallback):
         use_action_masks: bool,
         seed: int = 0,
         deterministic: bool = True,
+        selection_segments: int = 3,
+        drawdown_penalty_weight: float = 0.25,
+        turnover_penalty_weight: float = 0.001,
         verbose: int = 0,
     ) -> None:
         super().__init__(verbose=verbose)
@@ -51,6 +57,13 @@ class FullSplitValidationCallback(BaseCallback):
         self.use_action_masks = bool(use_action_masks)
         self.seed = int(seed)
         self.deterministic = bool(deterministic)
+        if selection_segments <= 0:
+            raise ValueError("selection_segments must be positive")
+        if drawdown_penalty_weight < 0 or turnover_penalty_weight < 0:
+            raise ValueError("validation penalty weights must be non-negative")
+        self.selection_segments = int(selection_segments)
+        self.drawdown_penalty_weight = float(drawdown_penalty_weight)
+        self.turnover_penalty_weight = float(turnover_penalty_weight)
         self.best_score = float("-inf")
         self.best_timestep: int | None = None
         self.best_snapshot: ValidationSnapshot | None = None
@@ -82,15 +95,16 @@ class FullSplitValidationCallback(BaseCallback):
         self.evaluation_count += 1
         self._last_evaluation_timestep = self.num_timesteps
 
-        if snapshot.total_return > self.best_score:
-            self.best_score = snapshot.total_return
+        if snapshot.selection_score > self.best_score:
+            self.best_score = snapshot.selection_score
             self.best_timestep = snapshot.timestep
             self.best_snapshot = snapshot
             self._best_parameters = copy.deepcopy(self.model.get_parameters())
             if self.verbose:
                 print(
                     "Validation best updated at "
-                    f"{snapshot.timestep} steps: {snapshot.total_return:.4%}"
+                    f"{snapshot.timestep} steps: score={snapshot.selection_score:.4f}, "
+                    f"return={snapshot.total_return:.4%}"
                 )
         self._record(snapshot)
 
@@ -99,6 +113,32 @@ class FullSplitValidationCallback(BaseCallback):
         dates = tuple(self._env_attr("available_dates"))
         if not dates:
             raise ValueError("validation environment has no trading dates")
+        metrics = self._run_dates(dates)
+        segment_count = min(self.selection_segments, len(dates))
+        date_segments = np.array_split(np.asarray(dates, dtype=object), segment_count)
+        segment_returns = [
+            float(self._run_dates(tuple(segment))["total_return"])
+            for segment in date_segments
+            if len(segment)
+        ]
+        median_segment_return = float(np.median(segment_returns))
+        worst_segment_return = float(np.min(segment_returns))
+        selection_score = (
+            median_segment_return
+            - self.drawdown_penalty_weight * abs(float(metrics["max_drawdown"]))
+            - self.turnover_penalty_weight * float(metrics["turnover"])
+        )
+        return ValidationSnapshot(
+            timestep=int(self.num_timesteps),
+            selection_score=selection_score,
+            median_segment_return=median_segment_return,
+            worst_segment_return=worst_segment_return,
+            **metrics,
+        )
+
+    def _run_dates(self, dates: tuple) -> dict[str, Any]:
+        """Run one deterministic contiguous validation window."""
+        env = self.evaluation_env
         observation, reset_info = env.reset(
             seed=self.seed,
             options={"start_date": dates[0], "episode_days": len(dates)},
@@ -131,18 +171,17 @@ class FullSplitValidationCallback(BaseCallback):
         running_peaks = np.maximum.accumulate(values)
         max_drawdown = float(np.min(values / np.maximum(running_peaks, 1e-9) - 1.0))
         action_total = max(int(action_counts.sum()), 1)
-        return ValidationSnapshot(
-            timestep=int(self.num_timesteps),
-            total_return=float(final_value / initial_value - 1.0),
-            final_portfolio_value=float(final_value),
-            max_drawdown=max_drawdown,
-            turnover=float(traded_notional / max(initial_value, 1e-9)),
-            trade_count=trade_count,
+        return {
+            "total_return": float(final_value / initial_value - 1.0),
+            "final_portfolio_value": float(final_value),
+            "max_drawdown": max_drawdown,
+            "turnover": float(traded_notional / max(initial_value, 1e-9)),
+            "trade_count": trade_count,
             **{
                 f"{label}_action_rate": float(action_counts[index] / action_total)
                 for index, label in enumerate(TARGET_ACTION_LABELS)
             },
-        )
+        }
 
     def _env_attr(self, name: str) -> Any:
         try:
@@ -154,12 +193,15 @@ class FullSplitValidationCallback(BaseCallback):
         for key, value in asdict(snapshot).items():
             if key != "timestep":
                 self.logger.record(f"validation/{key}", float(value))
-        self.logger.record("validation/best_total_return", float(self.best_score))
+        self.logger.record("validation/best_selection_score", float(self.best_score))
 
     def summary(self) -> dict[str, Any]:
         """Return JSON-serializable model-selection metadata."""
         return {
-            "metric": "total_return",
+            "metric": "stability_score",
+            "selection_segments": self.selection_segments,
+            "drawdown_penalty_weight": self.drawdown_penalty_weight,
+            "turnover_penalty_weight": self.turnover_penalty_weight,
             "eval_freq": self.eval_freq,
             "evaluation_count": self.evaluation_count,
             "best_timestep": self.best_timestep,

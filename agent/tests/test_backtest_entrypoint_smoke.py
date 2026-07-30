@@ -114,7 +114,13 @@ def test_backtest_entrypoint_compares_baselines(tmp_path: Path) -> None:
     assert payload["symbol"] == "005930"
     assert payload["split"] == "test"
     assert [row["agent"] for row in payload["results"]] == [
+        "cash",
+        "static_20pct",
+        "static_40pct",
+        "static_60pct",
+        "static_80pct",
         "buy_and_hold",
+        "volatility_scaled",
         "random",
         "ma_crossover",
     ]
@@ -220,7 +226,13 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
     payload = json.loads(proc.stdout)
 
     assert [row["agent"] for row in payload["results"]] == [
+        "cash",
+        "static_20pct",
+        "static_40pct",
+        "static_60pct",
+        "static_80pct",
         "buy_and_hold",
+        "volatility_scaled",
         "random",
         "ma_crossover",
         metadata.artifact_id,
