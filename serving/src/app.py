@@ -41,13 +41,28 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
     feature_engineer = FeatureEngineer()
     max_bar_age = pd.Timedelta(minutes=config.max_bar_age_minutes)
 
+    async def _request_body_json(request: Request) -> dict | None:
+        # best-effort: 감사 목적이므로 파싱 실패 시 조용히 생략한다.
+        try:
+            raw = await request.body()
+            return json.loads(raw)
+        except Exception:
+            return None
+
     @app.exception_handler(ServingError)
     async def _serving_error(request: Request, exc: ServingError) -> JSONResponse:
         detail = jsonable_encoder(exc.detail)
         if request.url.path == "/predict":
             # spec §3: 에러도 audit — "모든 predict 요청/응답(+에러)"
-            _audit(config, {"path": "/predict", "error": {
-                "code": exc.code, "message": exc.message, "detail": detail}})
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "path": "/predict",
+                "error": {"code": exc.code, "message": exc.message, "detail": detail},
+            }
+            body = await _request_body_json(request)
+            if body is not None:
+                record["request"] = body
+            _audit(config, record)
         return _error_response(exc.code, exc.http_status, exc.message, detail)
 
     @app.exception_handler(RequestValidationError)
@@ -55,8 +70,12 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
         # exc.errors()의 ctx에 ValueError 객체가 섞일 수 있어 jsonable_encoder 필수
         errors = jsonable_encoder(exc.errors())
         if request.url.path == "/predict":
-            _audit(config, {"path": "/predict", "error": {
-                "code": "VALIDATION_ERROR", "errors": errors}})
+            _audit(config, {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "path": "/predict",
+                "error": {"code": "VALIDATION_ERROR", "errors": errors},
+                "request": jsonable_encoder(exc.body),
+            })
         return _error_response("VALIDATION_ERROR", 422, "invalid request",
                                {"errors": errors})
 
@@ -66,9 +85,16 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
         # 모든 예외도 구조화된 에러 바디 + audit 계약을 지켜야 한다 (spec §3).
         detail = jsonable_encoder({"exception_type": type(exc).__name__})
         if request.url.path == "/predict":
-            _audit(config, {"path": "/predict", "error": {
-                "code": "SERVING_ERROR", "message": "unexpected server error",
-                "detail": detail}})
+            record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "path": "/predict",
+                "error": {"code": "SERVING_ERROR", "message": "unexpected server error",
+                          "detail": detail},
+            }
+            body = await _request_body_json(request)
+            if body is not None:
+                record["request"] = body
+            _audit(config, record)
         return _error_response(
             "SERVING_ERROR", 500, "unexpected server error", detail)
 
@@ -128,6 +154,12 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
         except Exception as exc:  # inference 내부 오류만 MODEL_ERROR로
             raise ModelError(f"inference failed: {exc}") from exc
 
+        if not bool(result.action_mask[action]):
+            raise ModelError(
+                f"model returned masked action {action}",
+                {"action": action, "action_mask": [bool(x) for x in result.action_mask]},
+            )
+
         response = PredictResponse(
             action=action,
             label=EXPECTED_ACTION_LABELS[action],
@@ -138,6 +170,8 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
             observation=[float(x) for x in result.observation],
         )
         _audit(config, {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "path": "/predict",
             "as_of": str(as_of), "symbol": request.symbol,
             "portfolio": request.portfolio.model_dump(),
             "bar_ts": str(result.bar_ts), "action": action,

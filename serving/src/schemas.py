@@ -4,10 +4,12 @@ import math
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class PortfolioState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     # strict=True: bool·"1"·1.0의 묵시적 int 변환 금지
     units_held: int = Field(ge=0, strict=True)
     shares_held: float = Field(ge=0)
@@ -27,6 +29,8 @@ class PortfolioState(BaseModel):
 
 
 class PredictRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     symbol: str = Field(min_length=1)
     portfolio: PortfolioState
     as_of: Optional[datetime] = None

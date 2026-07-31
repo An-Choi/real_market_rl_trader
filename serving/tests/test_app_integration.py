@@ -52,17 +52,22 @@ def test_predict_writes_audit_log(client, minute_data, tmp_path):
     assert logs, "audit jsonl not written"
     record = json.loads(logs[0].read_text(encoding="utf-8").splitlines()[-1])
     assert record["symbol"] == "005930" and "observation" in record
+    assert record["path"] == "/predict"
+    assert "ts" in record and record["ts"]
 
 
 def test_stale_data_maps_to_503_and_audited(client, minute_data, tmp_path):
     day = pd.to_datetime(minute_data["Timestamp"]).dt.date.iloc[-1]
-    resp = client.post("/predict", json=_payload(f"{day}T23:00:00+09:00"))
+    payload = _payload(f"{day}T23:00:00+09:00")
+    resp = client.post("/predict", json=payload)
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == "STALE_DATA"
     logs = list((tmp_path / "logs").glob("predict-*.jsonl"))
     assert logs, "error must be audited too (spec §3)"
     record = json.loads(logs[0].read_text(encoding="utf-8").splitlines()[-1])
     assert record["error"]["code"] == "STALE_DATA"
+    assert "ts" in record and record["ts"]
+    assert record.get("request") == payload
 
 
 def test_validation_error_audited(client, minute_data, tmp_path):
@@ -119,6 +124,38 @@ def test_ready_fails_without_data(tmp_path, tiny_artifact_dir):
     provider = HistoricalParquetProvider(tmp_path / "empty")
     client = TestClient(create_app(config, predictor, provider))
     assert client.get("/ready").status_code == 503
+
+
+def test_masked_action_maps_to_500_and_audited(
+    monkeypatch, tmp_path, raw_data_dir, tiny_artifact_dir, minute_data
+):
+    # predictor.predict가 mask를 무시하고 금지된 액션을 반환하면 서버가 fail-closed로
+    # 잡아야 한다 (spec §1 mask parity) — RLAgent.predict의 non-Maskable fallback이나
+    # v3 plain-PPO artifact가 이 상황을 만들 수 있다.
+    config = ServingConfig(
+        artifact_dir=tiny_artifact_dir, data_dir=raw_data_dir,
+        symbols=["005930"], audit_log_dir=tmp_path / "logs",
+    )
+    predictor = Predictor.load(tiny_artifact_dir)
+    provider = HistoricalParquetProvider(raw_data_dir, warmup_days=config.warmup_days)
+
+    def _forbidden_action(observation, action_mask):
+        return 2  # flat 포트폴리오에서는 mask=[True, True, False] → clear(2) 금지
+
+    monkeypatch.setattr(predictor, "predict", _forbidden_action)
+    app = create_app(config, predictor, provider)
+    client = TestClient(app)
+
+    # flat 포트폴리오(units_held=0)를 강제해 mask=[True, True, False]를 만든다.
+    payload = _payload(_valid_as_of(client, minute_data), units_held=0, shares_held=0.0)
+    resp = client.post("/predict", json=payload)
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "MODEL_ERROR"
+
+    logs = list((tmp_path / "logs").glob("predict-*.jsonl"))
+    assert logs, "masked-action error must be audited too (spec §3)"
+    record = json.loads(logs[0].read_text(encoding="utf-8").splitlines()[-1])
+    assert record["error"]["code"] == "MODEL_ERROR"
 
 
 def test_unexpected_error_maps_to_500_and_audited(

@@ -179,6 +179,7 @@ artifact `metadata.json`의 `normalization` 필드:
 학습 종료 후:
 
 ```python
+import dataclasses
 from datetime import datetime, timezone
 
 from data.feature_engineer import FeatureEngineer
@@ -187,7 +188,7 @@ from models.artifact import (
 )
 
 meta = ArtifactMetadata(
-    artifact_format_version=2,
+    artifact_format_version=3,
     artifact_id=make_artifact_id("PPO", FeatureEngineer.FEATURE_SCHEMA_VERSION),
     created_at=datetime.now(timezone.utc).isoformat(),
     algo="PPO",
@@ -204,6 +205,7 @@ meta = ArtifactMetadata(
     env_params={"unit_fraction": 0.2, "max_units": 5, "initial_cash": 100_000_000,
                 "episode_days": 20, "duration_horizon_bars": 1280,
                 "nominal_bars_per_day": 64},
+    friction_params=dataclasses.asdict(env.friction_model),  # v3 필수 — §6 참조
 )
 save_artifact(agent, meta, "artifacts/")
 ```
