@@ -11,6 +11,13 @@ from gymnasium import spaces
 
 from friction.friction_model import FrictionModel
 from env.reward import RewardConfig, RewardTerms, calculate_reward_terms
+from env.observation import (
+    assemble_observation,
+    build_portfolio_state,
+    can_afford_add,
+    compute_action_mask,
+    extract_feature_vector,
+)
 
 
 ACTION_HOLD = 0
@@ -214,13 +221,17 @@ class TradingEnvironment(gym.Env):
         Mask-aware policies avoid learning from duplicate no-op actions without
         changing the public three-action contract.
         """
-        return np.array(
-            [
-                True,
-                self.units_held < self.max_units and self._can_afford_add(),
-                self.units_held > 0,
-            ],
-            dtype=bool,
+        row = self._row_at(self.current_step)
+        return compute_action_mask(
+            units_held=self.units_held,
+            max_units=self.max_units,
+            cash=self.cash,
+            initial_cash=self.initial_cash,
+            unit_fraction=self.unit_fraction,
+            friction_model=self.friction_model,
+            price=float(row[self.price_col]),
+            trade_date=pd.Timestamp(row["Timestamp"]).date(),
+            liquidity_score=self._current_liquidity_score(),
         )
 
     def _can_afford_add(
@@ -237,15 +248,15 @@ class TradingEnvironment(gym.Env):
             price = float(row[self.price_col])
         if trade_date is None:
             trade_date = pd.Timestamp(row["Timestamp"]).date()
-        unit_notional = self.initial_cash * self.unit_fraction
-        buy_friction = self.friction_model.calculate_total_friction(
-            trade_value=unit_notional,
-            side="buy",
-            liquidity_score=self._current_liquidity_score(),
+        return can_afford_add(
+            cash=self.cash,
+            initial_cash=self.initial_cash,
+            unit_fraction=self.unit_fraction,
+            friction_model=self.friction_model,
             price=price,
             trade_date=trade_date,
+            liquidity_score=self._current_liquidity_score(),
         )
-        return self.cash >= unit_notional + buy_friction
 
     def _execution_price(self, local_step: int) -> float:
         """시장가 주문 근사 체결가: ExecPrice(라벨 이후 첫 1분봉 Open/동시호가 단일가).
@@ -346,36 +357,28 @@ class TradingEnvironment(gym.Env):
         않는다(causal).
         """
         row = self._row_at(self.current_step)
-        features = (
-            pd.to_numeric(row[self.feature_columns], errors="coerce")
-            .fillna(0.0)
-            .to_numpy(dtype=np.float32)
-        )
-        price = float(row[self.price_col])
-        units_held_frac = self.units_held / max(self.max_units, 1)
-        held_value = self._held_market_value(price)
-        cost_basis = self.units_held * self.initial_cash * self.unit_fraction
-        unrealized_pnl_norm = (held_value - cost_basis) / max(self.initial_cash, 1e-9)
-        if self.units_held > 0 and self.entry_step is not None:
-            holding_duration_norm = min(
-                (self.current_step - self.entry_step) / self.duration_horizon_bars, 1.0
-            )
-        else:
-            holding_duration_norm = 0.0
-
+        features = extract_feature_vector(row, self.feature_columns)
         day_idx = int(
             np.searchsorted(self._day_start_offsets, self.current_step, side="right")
         ) - 1
         day_start = int(self._day_start_offsets[day_idx])
-        tod_frac = min(
-            (self.current_step - day_start) / max(self.nominal_bars_per_day - 1, 1), 1.0
+        portfolio_state = build_portfolio_state(
+            units_held=self.units_held,
+            max_units=self.max_units,
+            shares_held=self.shares_held,
+            price=float(row[self.price_col]),
+            initial_cash=self.initial_cash,
+            unit_fraction=self.unit_fraction,
+            bars_since_entry=(
+                self.current_step - self.entry_step
+                if self.units_held > 0 and self.entry_step is not None
+                else None
+            ),
+            duration_horizon_bars=self.duration_horizon_bars,
+            step_in_day=self.current_step - day_start,
+            nominal_bars_per_day=self.nominal_bars_per_day,
         )
-
-        portfolio_state = np.array(
-            [units_held_frac, unrealized_pnl_norm, holding_duration_norm, tod_frac],
-            dtype=np.float32,
-        )
-        return np.concatenate([features, portfolio_state]).astype(np.float32)
+        return assemble_observation(features, portfolio_state)
 
     def _calculate_reward(
         self,
