@@ -4,6 +4,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import yaml
+
 from data.feature_engineer import FeatureEngineer
 from friction.friction_model import FrictionModel
 from models.artifact import load_metadata
@@ -11,7 +13,7 @@ from observation_builder import build_decision_inputs
 from market_data import HistoricalParquetProvider
 from shadow_diff import (
     EXIT_ARTIFACT, EXIT_COVERAGE, EXIT_INPUT, EXIT_OK, EXIT_VALUE_MISMATCH,
-    run_diff,
+    main, run_diff,
 )
 from shadow_runner import trading_grid
 
@@ -251,3 +253,82 @@ def test_multiple_manifests_require_explicit_exit_4(shadow_fixture):
 def test_no_inputs_exit_4(shadow_fixture, tmp_path):
     empty = tmp_path / "none"; empty.mkdir()
     assert _run(shadow_fixture, manifest_dir=empty).exit_code == EXIT_INPUT
+
+
+def _write_serving_config(path, *, artifact_dir, data_dir, audit_log_dir, warmup_days):
+    path.write_text(yaml.safe_dump({
+        "artifact_dir": str(artifact_dir), "data_dir": str(data_dir),
+        "symbols": ["005930"], "audit_log_dir": str(audit_log_dir),
+        "warmup_days": warmup_days, "max_bar_age_minutes": 10,
+    }), encoding="utf-8")
+
+
+@pytest.mark.parametrize("exc", [
+    __import__("errors").StaleDataError("no completed minute bars", {}),
+    __import__("errors").ProviderError("no 1m parquet files", {}),
+    KeyError("bar_ts"),
+    FileNotFoundError("manifest missing"),
+])
+def test_main_recompute_crash_is_reported_as_exit_input(
+        shadow_fixture, tmp_path, monkeypatch, capsys, exc):
+    """backfill 누락(recompute가 당일 데이터 없는 raw_data_dir을 봄) → StaleDataError 등.
+
+    main()에 가드가 없으면 이 예외가 traceback과 함께 그대로 튀어나가 프로세스가
+    unhandled exception으로 죽는다 — 원인(backfill 누락 등 입력 문제)이 "값
+    불일치"(exit 1)로 오인되거나 traceback만 남는다. main()은 이를 잡아
+    EXIT_INPUT(4)로 매핑하고 원인 메시지를 출력해야 한다.
+    """
+    day = shadow_fixture["day"]
+    config_path = tmp_path / "serving.yaml"
+    _write_serving_config(
+        config_path, artifact_dir=shadow_fixture["artifact_dir"],
+        data_dir=shadow_fixture["data_dir"], audit_log_dir=tmp_path / "audit_log",
+        warmup_days=30,
+    )
+
+    def _raise(*args, **kwargs):
+        raise exc
+    monkeypatch.setattr("shadow_diff.run_diff", _raise)
+
+    exit_code = main([
+        "--date", day.isoformat(),
+        "--audit-dir", str(shadow_fixture["audit_dir"]),
+        "--manifest-dir", str(shadow_fixture["manifest_dir"]),
+        "--config", str(config_path),
+    ])
+    assert exit_code == EXIT_INPUT
+    out = capsys.readouterr().out
+    assert str(exc) in out or type(exc).__name__ in out
+
+
+def test_main_recompute_real_stale_data_error_is_exit_input(
+        shadow_fixture, tmp_path, capsys):
+    """backfill 누락(recompute가 당일 데이터 없는 data_dir을 봄)에서 실제로 발생하는
+    StaleDataError가 run_diff에서 잡히지 않고 그대로 전파됨을 먼저 확인한다 —
+    main()의 가드가 실제로 필요한 시나리오임을 증명 (동반 회귀 방지)."""
+    day = shadow_fixture["day"]
+    data_dir = Path(shadow_fixture["data_dir"])
+    missing_backfill_dir = tmp_path / "missing_backfill"
+    for symbol_dir in data_dir.iterdir():
+        if not symbol_dir.is_dir():
+            continue
+        for f in (symbol_dir / "1m").glob("*.parquet"):
+            df = pd.read_parquet(f)
+            ts = pd.to_datetime(df["Timestamp"])
+            trimmed = df[ts.dt.date < day]  # 당일 backfill 누락 재현
+            out = missing_backfill_dir / symbol_dir.name / "1m"
+            out.mkdir(parents=True, exist_ok=True)
+            if trimmed.empty:
+                continue
+            trimmed.reset_index(drop=True).to_parquet(out / f.name)
+
+    from errors import StaleDataError
+    with pytest.raises(StaleDataError):
+        run_diff(
+            day=day, audit_dir=shadow_fixture["audit_dir"],
+            manifest_dir=shadow_fixture["manifest_dir"],
+            artifact_dir=shadow_fixture["artifact_dir"], data_dir=missing_backfill_dir,
+            warmup_days=30, max_bar_age_minutes=10,
+            grid=shadow_fixture["grid"], warmup_count=shadow_fixture["warmup_count"],
+            explicit_manifest=None,
+        )

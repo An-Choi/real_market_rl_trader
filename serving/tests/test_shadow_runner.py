@@ -40,6 +40,7 @@ def test_classify_error_codes():
     ("error", "PROVIDER_ERROR", (True, 5, False)),
     ("error", "SERVING_ERROR", (True, 5, False)),
     ("error", "ConnectError", (True, 5, False)),        # 연결 거부 (httpx 예외 클래스명)
+    ("error", "ConnectTimeout", (True, 5, False)),      # 연결 반쯤 열린 blip (httpx 예외 클래스명)
     ("stale", "STALE_DATA", (True, 15, False)),
     ("wrong_bar", None, (True, 15, False)),             # 노출 지연 — stale과 동일 취급
     ("error", "VALIDATION_ERROR", (False, 0, True)),    # 계약 위반 → run 오류

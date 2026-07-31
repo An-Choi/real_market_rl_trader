@@ -20,16 +20,21 @@
 - 서버·runner·익일 diff 모두 **같은 clean commit**에서 실행 (diff가 HEAD == manifest SHA를 강제한다).
 
 ```bash
-# 1) 장 시작 전: live 서버 기동
+# 1) 장 시작 전: live 서버 기동 (serving.yaml: audit_log_dir: serving/logs/shadow-audit — shadow 운영 전용 경로,
+#    수동 호출 audit과 섞이지 않게 분리한다)
 # 2) runner (장중 자동 종료)
 ./.venv/bin/python serving/src/shadow_runner.py --symbol 005930
 # 3) 익일: backfill 후 diff (exit 0 = 정식 통과)
 ./.venv/bin/python scripts/backfill.py --symbols 005930
 ./.venv/bin/python serving/src/shadow_diff.py --date YYYY-MM-DD \
-  --audit-dir serving/logs --manifest-dir serving/logs/shadow \
+  --audit-dir serving/logs/shadow-audit --manifest-dir serving/logs/shadow \
   --config serving/configs/serving.yaml
 ```
 
 launchd 예시(선택): 일일 수집 잡과 같은 패턴으로 09:00 기동·수동 확인.
 
 diff exit code: 0 통과 / 1 값 불일치 / 2 coverage 실패 / 3 artifact·SHA 불일치 / 4 입력 문제
+
+운영 노트: wrong_bar 재시도(runner)는 해당 run을 구제하지 못한다 — 이미 남은 직전 bar의 audit이
+diff의 coverage 게이트에서 그대로 잡히므로, 재시도는 노출 지연을 조기에 알아채기 위한
+진단 목적일 뿐 exit code를 바꾸지 않는다.

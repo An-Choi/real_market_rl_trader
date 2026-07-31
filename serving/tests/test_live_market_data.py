@@ -7,6 +7,7 @@ import responses
 
 from errors import ProviderError
 from live_market_data import LiveKISProvider
+from market_data import HistoricalParquetProvider
 from pipeline.kis_auth import KISAuth, KISConfig
 
 TZ = "Asia/Seoul"
@@ -134,3 +135,73 @@ def test_check_ready_token_failure_maps_to_provider_error(raw_data_dir, tmp_path
                  status=500)
         with pytest.raises(ProviderError):
             provider.check_ready("005930")
+
+
+def test_live_window_matches_next_day_recompute_bit_exact(
+        raw_data_dir, minute_data, tmp_path, tiny_artifact_dir):
+    """당일 서빙(live)과 익일 backfill 후 재계산(historical)의 observation이
+    bit-exact 일치해야 한다 — 아니면 shadow diff가 영원히 값 불일치로 exit 1.
+
+    live: warmup_days=5 → 어제까지 마지막 4개 고유 날짜(parquet) + 당일(KIS stub)
+          = 5개 고유 날짜가 되어야 한다 (재trim 없으면 6개가 되어 EWM feature가
+          어긋난다).
+    recompute: 당일을 포함한 전체 parquet에서 HistoricalParquetProvider가
+          동일 warmup_days=5로 마지막 5개 고유 날짜를 고른다.
+    """
+    from data.feature_engineer import FeatureEngineer
+    from friction.friction_model import FrictionModel
+    from models.artifact import load_metadata
+    from observation_builder import build_decision_inputs
+
+    all_dates = sorted(pd.to_datetime(minute_data["Timestamp"]).dt.date.unique())
+    today = all_dates[-1]
+    hist_only = minute_data[pd.to_datetime(minute_data["Timestamp"]).dt.date < today]
+    today_frame = minute_data[pd.to_datetime(minute_data["Timestamp"]).dt.date == today]
+
+    # live가 기동 시점에 보는 backfill 상태: 당일 이전까지만 parquet로 존재
+    without_today_dir = tmp_path / "without_today"
+    ts = pd.to_datetime(hist_only["Timestamp"])
+    for period, grp in hist_only.groupby(ts.dt.to_period("M")):
+        out = without_today_dir / "005930" / "1m"
+        out.mkdir(parents=True, exist_ok=True)
+        grp.reset_index(drop=True).to_parquet(out / f"{period}.parquet")
+
+    warmup_days = 5
+    as_of = pd.Timestamp(f"{today} 10:35:00", tz=TZ)
+
+    live_provider = LiveKISProvider(
+        data_dir=without_today_dir, warmup_days=warmup_days,
+        auth=_cached_auth(tmp_path), rate_limit_sleep=0.0,
+        fetcher_factory=lambda symbol: StubFetcher(frame=today_frame.reset_index(drop=True)),
+    )
+    live_bars = live_provider.get_recent_bars("005930", as_of)
+
+    # 익일 backfill 후 상태: raw_data_dir는 이미 당일을 포함한 전체 parquet
+    reco_provider = HistoricalParquetProvider(raw_data_dir, warmup_days=warmup_days)
+    reco_bars = reco_provider.get_recent_bars("005930", as_of)
+
+    live_dates = sorted(pd.to_datetime(live_bars["Timestamp"]).dt.date.unique())
+    reco_dates = sorted(pd.to_datetime(reco_bars["Timestamp"]).dt.date.unique())
+    assert live_dates == reco_dates
+    assert len(live_dates) == warmup_days
+
+    meta = load_metadata(tiny_artifact_dir)
+    friction = FrictionModel(**meta.friction_params)
+    fe = FeatureEngineer()
+
+    live_result = build_decision_inputs(
+        bars_1m=live_bars, as_of=as_of,
+        units_held=0, shares_held=0.0, bars_since_entry=0,
+        available_cash=10_000.0, env_params=meta.env_params,
+        friction_model=friction, max_bar_age=pd.Timedelta(minutes=10),
+        feature_engineer=fe,
+    )
+    reco_result = build_decision_inputs(
+        bars_1m=reco_bars, as_of=as_of,
+        units_held=0, shares_held=0.0, bars_since_entry=0,
+        available_cash=10_000.0, env_params=meta.env_params,
+        friction_model=friction, max_bar_age=pd.Timedelta(minutes=10),
+        feature_engineer=fe,
+    )
+    import numpy as np
+    np.testing.assert_array_equal(live_result.observation, reco_result.observation)

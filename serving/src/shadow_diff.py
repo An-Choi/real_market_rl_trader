@@ -217,6 +217,8 @@ def run_diff(*, day, audit_dir: Path, manifest_dir: Path, artifact_dir: Path,
 
 def main(argv=None) -> int:
     from config import load_serving_config
+    from errors import ServingError
+    from models.artifact import ArtifactError
     from shadow_runner import trading_grid
 
     parser = argparse.ArgumentParser()
@@ -229,15 +231,22 @@ def main(argv=None) -> int:
 
     config = load_serving_config(args.config)
     day = date.fromisoformat(args.date)
-    result = run_diff(
-        day=day, audit_dir=Path(args.audit_dir),
-        manifest_dir=Path(args.manifest_dir),
-        artifact_dir=config.artifact_dir, data_dir=config.data_dir,
-        warmup_days=config.warmup_days,
-        max_bar_age_minutes=config.max_bar_age_minutes,
-        grid=trading_grid(day), warmup_count=12,
-        explicit_manifest=args.manifest,
-    )
+    try:
+        result = run_diff(
+            day=day, audit_dir=Path(args.audit_dir),
+            manifest_dir=Path(args.manifest_dir),
+            artifact_dir=config.artifact_dir, data_dir=config.data_dir,
+            warmup_days=config.warmup_days,
+            max_bar_age_minutes=config.max_bar_age_minutes,
+            grid=trading_grid(day), warmup_count=12,
+            explicit_manifest=args.manifest,
+        )
+    except (ServingError, ArtifactError, KeyError, FileNotFoundError) as exc:
+        # backfill 누락(StaleDataError)·잘못된 artifact_dir(ArtifactError)·잘린
+        # manifest(KeyError) 등은 값 불일치(exit 1)가 아니라 입력 문제다 — 여기서
+        # 잡지 않으면 traceback + exit 1로 나가 "값 불일치"로 오인된다.
+        print(f"[input error] {type(exc).__name__}: {exc}")
+        return EXIT_INPUT
     for line in result.report:
         print(line)
     return result.exit_code

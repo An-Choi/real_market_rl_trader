@@ -74,6 +74,13 @@ class LiveKISProvider:
         ts = pd.to_datetime(merged["Timestamp"])
         # 완료 분봉 causal cutoff — Historical과 동일 규칙 재적용 (당일분 포함)
         merged = merged[ts + _MINUTE <= as_of]
+        ts = pd.to_datetime(merged["Timestamp"])
+        # 익일 재계산(HistoricalParquetProvider)과 동일한 "마지막 warmup_days개
+        # 고유 날짜" 재trim — 안 하면 hist(어제까지 warmup_days개) + 당일 = warmup_days+1개
+        # 고유 날짜가 되어, EWM 등 선행 히스토리 전체에 의존하는 feature가
+        # 익일 재계산과 미세하게 어긋난다 (bit-exact parity 불변식 위반).
+        recent_dates = sorted(ts.dt.date.unique())[-self._historical.warmup_days:]
+        merged = merged[ts.dt.date.isin(recent_dates)]
         return merged.reset_index(drop=True)
 
 

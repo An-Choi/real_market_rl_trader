@@ -53,7 +53,8 @@ def classify_response(scheduled_bar_ts: str, status_code: int, body: dict):
 
 
 # 재시도는 명시적 allowlist (spec §2) — 밖은 전부 재시도 금지
-_TRANSIENT_RETRYABLE = frozenset({"PROVIDER_ERROR", "SERVING_ERROR", "ConnectError"})
+_TRANSIENT_RETRYABLE = frozenset(
+    {"PROVIDER_ERROR", "SERVING_ERROR", "ConnectError", "ConnectTimeout"})
 _NO_RETRY_BENIGN = frozenset({"READ_TIMEOUT", "INSUFFICIENT_HISTORY"})
 _RUN_ERROR_CODES = frozenset({"VALIDATION_ERROR", "MODEL_ERROR"})
 
