@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from data.feature_engineer import FeatureEngineer
 from env.trading_env import TradingEnvironment
 from friction.friction_model import FrictionModel
 from models import RLAgent, make_training_metadata, save_artifact
+from utils.config_loader import load_config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -163,10 +165,11 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
 
     loader = DataLoader(raw_data_dir=raw_dir, processed_data_dir=processed_dir)
     featured_data = build_features(symbol, loader)
+    repo_config = load_config(PROJECT_ROOT / "env" / "configs" / "config.yaml")
     env = TradingEnvironment(
         market_data=featured_data,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
-        friction_model=FrictionModel(),
+        friction_model=FrictionModel(**repo_config["friction"]),  # CLI 백테스트가 재구성하는 friction과 일치해야 함
         unit_fraction=0.199,  # 레포 config와 일치해야 CLI 백테스트가 artifact를 수용
         episode_days=20,
         duration_horizon_bars=1280,
@@ -195,6 +198,7 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
             "duration_horizon_bars": env.duration_horizon_bars,
             "nominal_bars_per_day": env.nominal_bars_per_day,
         },
+        friction_params=dataclasses.asdict(env.friction_model),
     )
     artifact_dir = save_artifact(agent, metadata, tmp_path / "artifacts")
 

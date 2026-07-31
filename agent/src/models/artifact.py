@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import shutil
 import subprocess
 import uuid
@@ -16,12 +17,26 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_FORMAT_VERSIONS = (1, 2)
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3)
+SERVING_FORMAT_VERSION = 3  # 서버는 이 버전만 수용 (spec §1 friction 계약)
 KNOWN_ACTION_TYPES = ("discrete",)
 KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize", "feature_standardization")
+FRICTION_RATE_FIELDS = (
+    "fee_rate", "spread_rate", "slippage_rate",
+    "execution_uncertainty_rate", "sell_tax_rate",
+)
+FRICTION_FLAG_FIELDS = ("dynamic_spread", "date_based_sell_tax")
 REQUIRED_ENV_PARAMS_BY_VERSION = {
     1: ("unit_fraction", "max_units", "initial_cash"),
     2: (
+        "unit_fraction",
+        "max_units",
+        "initial_cash",
+        "episode_days",
+        "duration_horizon_bars",
+        "nominal_bars_per_day",
+    ),
+    3: (
         "unit_fraction",
         "max_units",
         "initial_cash",
@@ -94,6 +109,7 @@ class ArtifactMetadata:
     train_git_sha: str
     train_data: dict[str, Any]
     env_params: dict[str, Any]
+    friction_params: dict[str, Any] | None = None
     training_params: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -175,6 +191,33 @@ class ArtifactMetadata:
                     raise ArtifactError(
                         f"env_params[{key!r}] must be a positive int: {value!r}"
                     )
+        if self.artifact_format_version >= 3:
+            fp = self.friction_params
+            if not isinstance(fp, dict):
+                raise ArtifactError(f"friction_params must be a dict for format v3: {fp!r}")
+            expected = set(FRICTION_RATE_FIELDS) | set(FRICTION_FLAG_FIELDS)
+            actual = set(fp)
+            if actual != expected:
+                raise ArtifactError(
+                    f"friction_params keys must be exactly {sorted(expected)}; "
+                    f"missing={sorted(expected - actual)} unknown={sorted(actual - expected)}"
+                )
+            for key in FRICTION_RATE_FIELDS:
+                value = fp[key]
+                if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                        or not math.isfinite(value) or value < 0:
+                    raise ArtifactError(
+                        f"friction_params[{key!r}] must be a finite non-negative number: {value!r}"
+                    )
+            for key in FRICTION_FLAG_FIELDS:
+                if not isinstance(fp[key], bool):
+                    raise ArtifactError(
+                        f"friction_params[{key!r}] must be a bool: {fp[key]!r}"
+                    )
+        elif self.friction_params is not None:
+            raise ArtifactError(
+                "friction_params is a format v3 field; remove it or bump artifact_format_version"
+            )
         if not isinstance(self.training_params, dict):
             raise ArtifactError("training_params must be a dict")
 
@@ -193,6 +236,7 @@ def make_training_metadata(
     feature_schema_version: int,
     feature_columns: list[str],
     env_params: dict[str, Any],
+    friction_params: dict[str, Any],
     portfolio_state_fields: list[str] | None = None,
     normalization: dict[str, Any] | None = None,
     training_params: dict[str, Any] | None = None,
@@ -204,7 +248,7 @@ def make_training_metadata(
     train_end = str(timestamps.max().date()) if not timestamps.empty else "unknown"
 
     return ArtifactMetadata(
-        artifact_format_version=2,
+        artifact_format_version=3,
         artifact_id=make_artifact_id(agent.model_name, feature_schema_version),
         created_at=datetime.now(timezone.utc).isoformat(),
         algo=agent.model_name,
@@ -218,6 +262,7 @@ def make_training_metadata(
         train_git_sha=current_git_sha(),
         train_data={"symbols": [symbol], "start": train_start, "end": train_end},
         env_params=env_params,
+        friction_params=dict(friction_params),
         training_params=dict(training_params or {}),
     )
 
@@ -316,6 +361,19 @@ def _check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
             f"env action space n={getattr(action_space, 'n', None)!r} != "
             f"artifact action_space n={meta.action_space.get('n')!r}"
         )
+
+    if meta.artifact_format_version >= 3:
+        friction = getattr(target, "friction_model", None)
+        if friction is None:
+            raise ArtifactError(
+                "env does not expose 'friction_model'; cannot verify mask semantics"
+            )
+        env_friction = dataclasses.asdict(friction)
+        if env_friction != meta.friction_params:
+            raise ArtifactError(
+                f"env friction {env_friction!r} != artifact friction_params "
+                f"{meta.friction_params!r}; action mask semantics would silently differ"
+            )
 
 
 def load_artifact(

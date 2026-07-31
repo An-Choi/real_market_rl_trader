@@ -85,7 +85,12 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
     from models.artifact import load_metadata
 
     meta = load_metadata(artifact_dir)
-    assert meta.artifact_format_version == 2
+    assert meta.artifact_format_version == 3
+    assert set(meta.friction_params) == {
+        "fee_rate", "spread_rate", "slippage_rate", "execution_uncertainty_rate",
+        "sell_tax_rate", "dynamic_spread", "date_based_sell_tax",
+    }
+    assert meta.friction_params["fee_rate"] == config["friction"]["fee_rate"]
     assert meta.env_params["episode_days"] >= 1
     assert meta.env_params["duration_horizon_bars"] == (
         meta.env_params["episode_days"] * 64

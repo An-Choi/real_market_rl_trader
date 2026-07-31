@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -181,6 +182,7 @@ def train_ppo_artifact(
             "duration_horizon_bars": raw_environment.duration_horizon_bars,
             "nominal_bars_per_day": raw_environment.nominal_bars_per_day,
         },
+        friction_params=dataclasses.asdict(raw_environment.friction_model),
         normalization=(
             {"type": "feature_standardization", "file": "feature_normalization.json"}
             if normalizer is not None

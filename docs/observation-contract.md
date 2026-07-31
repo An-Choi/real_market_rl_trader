@@ -1,6 +1,6 @@
 # Observation Contract — RL 학습 ↔ 서빙
 
-**기준:** `FEATURE_SCHEMA_VERSION = 2` / artifact format v2
+**기준:** `FEATURE_SCHEMA_VERSION = 3` / artifact format v3
 **진실의 원천:** `env/src/data/feature_engineer.py`의 `FeatureEngineer.FEATURE_COLUMNS`·
 `FEATURE_SCHEMA_VERSION`, `env/src/env/trading_env.py`의 `_get_observation()`.
 이 문서는 코드를 미러링하며, 불일치 시 코드가 우선한다 (문서를 갱신할 것).
@@ -113,6 +113,7 @@ episode 끝은 `truncated=True`(continuing task)이며, 미청산 종료의 가�
 - backtest/평가 실행 경로(`load_artifact(env=...)`)에서도 env가 선언한
   `feature_schema_version`과 artifact 값을 비교해 불일치 시 거부한다
   (서버 기동 거부와 동일한 계약의 실행 시점 버전).
+- 서버는 artifact format v3만 수용한다(v2 이하 기동 거부). v3 = v2 필수 키 + `friction_params`.
 
 ## 5. Normalization 규약
 
@@ -134,12 +135,12 @@ artifact `metadata.json`의 `normalization` 필드:
 
 ```json
 {
-  "artifact_format_version": 2,
-  "artifact_id": "ppo-fs2-20260709-153000",
+  "artifact_format_version": 3,
+  "artifact_id": "ppo-fs3-20260709-153000",
   "created_at": "2026-07-09T06:30:00Z",
   "algo": "PPO",
   "policy": "MlpPolicy",
-  "feature_schema_version": 2,
+  "feature_schema_version": 3,
   "feature_columns": ["log_ret_1", "log_ret_3", "log_ret_12",
     "realized_vol_12", "relative_volume", "vwap_dev",
     "trend_strength_30m", "macd_hist_30m", "vol_regime_30m"],
@@ -152,6 +153,9 @@ artifact `metadata.json`의 `normalization` 필드:
   "train_data": {"symbols": ["005930"], "start": "2025-05-22", "end": "2026-06-30"},
   "env_params": {"unit_fraction": 0.2, "max_units": 5, "initial_cash": 100000000,
     "episode_days": 20, "duration_horizon_bars": 1280, "nominal_bars_per_day": 64},
+  "friction_params": {"fee_rate": 0.00018, "spread_rate": 0.001, "slippage_rate": 0.0,
+    "execution_uncertainty_rate": 0.0, "sell_tax_rate": 0.002,
+    "dynamic_spread": true, "date_based_sell_tax": true},
   "training_params": {"total_timesteps": 300000, "seed": 42, "ppo": {}}
 }
 ```
@@ -168,6 +172,7 @@ artifact `metadata.json`의 `normalization` 필드:
 | `train_git_sha` | 학습 코드 커밋 (uncommitted 변경 시 `-dirty`, 조회 실패 시 `unknown`) |
 | `train_data` | 학습 데이터 구간 추적 |
 | `env_params` | §2의 portfolio state 계산 파라미터 |
+| `friction_params` | 학습 env friction snapshot(asdict) — 서빙 mask parity의 필수 계약 (v3+) |
 
 ## 7. 학습 쪽 사용 예시
 
