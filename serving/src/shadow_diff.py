@@ -229,9 +229,9 @@ def main(argv=None) -> int:
     parser.add_argument("--manifest", default=None)
     args = parser.parse_args(argv)
 
-    config = load_serving_config(args.config)
-    day = date.fromisoformat(args.date)
     try:
+        config = load_serving_config(args.config)
+        day = date.fromisoformat(args.date)
         result = run_diff(
             day=day, audit_dir=Path(args.audit_dir),
             manifest_dir=Path(args.manifest_dir),
@@ -241,10 +241,14 @@ def main(argv=None) -> int:
             grid=trading_grid(day), warmup_count=12,
             explicit_manifest=args.manifest,
         )
-    except (ServingError, ArtifactError, KeyError, FileNotFoundError) as exc:
+    except (ServingError, ArtifactError, KeyError, FileNotFoundError,
+            ValueError, json.JSONDecodeError) as exc:
+        # config 부재/손상(FileNotFoundError/ValueError)·잘못된 --date(ValueError)·
         # backfill 누락(StaleDataError)·잘못된 artifact_dir(ArtifactError)·잘린
-        # manifest(KeyError) 등은 값 불일치(exit 1)가 아니라 입력 문제다 — 여기서
-        # 잡지 않으면 traceback + exit 1로 나가 "값 불일치"로 오인된다.
+        # manifest(KeyError)·손상 JSONL(json.JSONDecodeError, ValueError의 서브클래스라
+        # 명시할 필요는 없지만 의도를 드러내기 위해 남긴다) 등은 값 불일치(exit 1)가
+        # 아니라 입력 문제다 — 여기서 잡지 않으면 traceback + exit 1로 나가
+        # "값 불일치"로 오인된다.
         print(f"[input error] {type(exc).__name__}: {exc}")
         return EXIT_INPUT
     for line in result.report:

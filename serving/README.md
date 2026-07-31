@@ -20,8 +20,9 @@
 - 서버·runner·익일 diff 모두 **같은 clean commit**에서 실행 (diff가 HEAD == manifest SHA를 강제한다).
 
 ```bash
-# 1) 장 시작 전: live 서버 기동 (serving.yaml: audit_log_dir: serving/logs/shadow-audit — shadow 운영 전용 경로,
-#    수동 호출 audit과 섞이지 않게 분리한다)
+# 1) 장 시작 전: serving.yaml의 audit_log_dir을 serving/logs/shadow-audit로 변경한다
+#    (shadow 전용 격리 — 수동 호출 audit과 섞이지 않게 분리, 일반 운영 기본값은 건드리지 않는다)
+#    변경 후 live 서버 기동
 # 2) runner (장중 자동 종료)
 ./.venv/bin/python serving/src/shadow_runner.py --symbol 005930
 # 3) 익일: backfill 후 diff (exit 0 = 정식 통과)

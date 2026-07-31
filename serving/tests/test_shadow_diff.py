@@ -332,3 +332,57 @@ def test_main_recompute_real_stale_data_error_is_exit_input(
             grid=shadow_fixture["grid"], warmup_count=shadow_fixture["warmup_count"],
             explicit_manifest=None,
         )
+
+
+def test_main_missing_config_file_is_exit_input(shadow_fixture, tmp_path, capsys):
+    """--config가 존재하지 않는 경로면 load_serving_config가 try 밖에서
+    FileNotFoundError를 던져 traceback + exit 1로 유출된다 — exit 4여야 한다."""
+    day = shadow_fixture["day"]
+    exit_code = main([
+        "--date", day.isoformat(),
+        "--audit-dir", str(shadow_fixture["audit_dir"]),
+        "--manifest-dir", str(shadow_fixture["manifest_dir"]),
+        "--config", str(tmp_path / "does-not-exist.yaml"),
+    ])
+    assert exit_code == EXIT_INPUT
+
+
+def test_main_invalid_date_is_exit_input(shadow_fixture, tmp_path, capsys):
+    """--date가 잘못된 형식(예: 2026-13-99)이면 date.fromisoformat이 try 밖에서
+    ValueError를 던져 traceback + exit 1로 유출된다 — exit 4여야 한다."""
+    config_path = tmp_path / "serving.yaml"
+    _write_serving_config(
+        config_path, artifact_dir=shadow_fixture["artifact_dir"],
+        data_dir=shadow_fixture["data_dir"], audit_log_dir=tmp_path / "audit_log",
+        warmup_days=30,
+    )
+    exit_code = main([
+        "--date", "2026-13-99",
+        "--audit-dir", str(shadow_fixture["audit_dir"]),
+        "--manifest-dir", str(shadow_fixture["manifest_dir"]),
+        "--config", str(config_path),
+    ])
+    assert exit_code == EXIT_INPUT
+
+
+def test_main_corrupt_manifest_json_is_exit_input(shadow_fixture, tmp_path, capsys):
+    """manifest jsonl에 깨진 JSON 줄이 있으면 _load_jsonl의 json.loads가
+    json.JSONDecodeError를 던진다 — main()이 이를 잡아 exit 4로 매핑해야 한다."""
+    day = shadow_fixture["day"]
+    config_path = tmp_path / "serving.yaml"
+    _write_serving_config(
+        config_path, artifact_dir=shadow_fixture["artifact_dir"],
+        data_dir=shadow_fixture["data_dir"], audit_log_dir=tmp_path / "audit_log",
+        warmup_days=30,
+    )
+    manifest_file = next(shadow_fixture["manifest_dir"].glob("*.jsonl"))
+    with manifest_file.open("a", encoding="utf-8") as fh:
+        fh.write("{not valid json\n")
+
+    exit_code = main([
+        "--date", day.isoformat(),
+        "--audit-dir", str(shadow_fixture["audit_dir"]),
+        "--manifest-dir", str(shadow_fixture["manifest_dir"]),
+        "--config", str(config_path),
+    ])
+    assert exit_code == EXIT_INPUT

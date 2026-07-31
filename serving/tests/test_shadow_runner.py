@@ -1,11 +1,14 @@
+import json
 from datetime import date, datetime, timezone
 
 import pandas as pd
 import pytest
 
+import httpx
+
 from shadow_runner import (
-    apply_until, can_retry, classify_response, fetch_run_context,
-    retry_policy, trading_grid,
+    ManifestWriter, apply_until, can_retry, classify_response,
+    execute_grid_slot, fetch_run_context, retry_policy, trading_grid,
 )
 
 TZ = "Asia/Seoul"
@@ -107,3 +110,142 @@ def test_fetch_run_context_success():
     artifact_id, portfolio = fetch_run_context(_StubClient(resp), "http://s")
     assert artifact_id == "ppo-fs3-x"
     assert portfolio["available_cash"] == 10000.0
+
+
+# ── execute_grid_slot ────────────────────────────────────────────────────
+
+class _PredictStubClient:
+    """duck-type client for _call_predict: .post(url, json=...) -> _StubResp,
+    or raises an httpx exception if configured to."""
+
+    def __init__(self, responses=None, raises=None):
+        # responses: list of _StubResp, consumed in order per .post() call
+        # raises: exception instance (or list of them) to raise instead
+        self._responses = list(responses) if responses else None
+        self._raises = raises if isinstance(raises, list) else (
+            [raises] if raises is not None else None)
+        self.calls = 0
+
+    def post(self, url, json=None):
+        idx = self.calls
+        self.calls += 1
+        if self._raises is not None:
+            exc = self._raises[idx] if idx < len(self._raises) else self._raises[-1]
+            if exc is not None:
+                raise exc
+        return self._responses[idx]
+
+
+class _SleepRecorder:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, seconds):
+        self.calls.append(seconds)
+
+
+SCHEDULED = "2026-07-21T10:05:00+09:00"
+NEXT_GRID_AT = pd.Timestamp("2026-07-21 10:10:00", tz=TZ)
+
+
+def test_execute_grid_slot_stale_then_ok_retries():
+    client = _PredictStubClient(responses=[
+        _StubResp(503, {"error": {"code": "STALE_DATA"}}),
+        _StubResp(200, {"bar_ts": SCHEDULED}),
+    ])
+    now_calls = iter([
+        pd.Timestamp("2026-07-21 10:05:01", tz=TZ),   # can_retry check
+    ])
+    sleep_fn = _SleepRecorder()
+    attempts, outcome, response_bar_ts, run_error = execute_grid_slot(
+        client, "http://s", "005930", {}, SCHEDULED, NEXT_GRID_AT,
+        now_fn=lambda: next(now_calls), sleep_fn=sleep_fn,
+    )
+    assert outcome == "ok"
+    assert len(attempts) == 2
+    assert attempts[0]["outcome"] == "stale"
+    assert response_bar_ts == SCHEDULED
+    assert run_error is False
+    assert sleep_fn.calls == [15]
+
+
+def test_execute_grid_slot_insufficient_budget_preserves_explicit_outcome():
+    client = _PredictStubClient(responses=[
+        _StubResp(503, {"error": {"code": "STALE_DATA"}}),
+    ])
+    # now is right before next_grid_at minus budget → can_retry False
+    now_fn = lambda: NEXT_GRID_AT - pd.Timedelta(seconds=1)
+    sleep_fn = _SleepRecorder()
+    attempts, outcome, response_bar_ts, run_error = execute_grid_slot(
+        client, "http://s", "005930", {}, SCHEDULED, NEXT_GRID_AT,
+        now_fn=now_fn, sleep_fn=sleep_fn,
+    )
+    assert outcome == "stale"
+    assert len(attempts) == 1
+    assert run_error is False
+    assert sleep_fn.calls == []
+
+
+def test_execute_grid_slot_no_response_and_insufficient_budget_is_skipped():
+    client = _PredictStubClient(raises=httpx.ConnectError("refused"))
+    now_fn = lambda: NEXT_GRID_AT - pd.Timedelta(seconds=1)
+    sleep_fn = _SleepRecorder()
+    attempts, outcome, response_bar_ts, run_error = execute_grid_slot(
+        client, "http://s", "005930", {}, SCHEDULED, NEXT_GRID_AT,
+        now_fn=now_fn, sleep_fn=sleep_fn,
+    )
+    assert outcome == "skipped"
+    assert len(attempts) == 1
+    assert run_error is False
+
+
+def test_execute_grid_slot_read_timeout_never_retries():
+    client = _PredictStubClient(raises=httpx.ReadTimeout("timed out"))
+    now_fn = lambda: pd.Timestamp("2026-07-21 10:05:01", tz=TZ)
+    sleep_fn = _SleepRecorder()
+    attempts, outcome, response_bar_ts, run_error = execute_grid_slot(
+        client, "http://s", "005930", {}, SCHEDULED, NEXT_GRID_AT,
+        now_fn=now_fn, sleep_fn=sleep_fn,
+    )
+    assert len(attempts) == 1
+    assert outcome == "error"
+    assert attempts[0]["error_code"] == "READ_TIMEOUT"
+    assert run_error is False
+    assert sleep_fn.calls == []
+
+
+def test_execute_grid_slot_validation_error_is_run_error_no_retry():
+    client = _PredictStubClient(responses=[
+        _StubResp(422, {"error": {"code": "VALIDATION_ERROR"}}),
+    ])
+    now_fn = lambda: pd.Timestamp("2026-07-21 10:05:01", tz=TZ)
+    sleep_fn = _SleepRecorder()
+    attempts, outcome, response_bar_ts, run_error = execute_grid_slot(
+        client, "http://s", "005930", {}, SCHEDULED, NEXT_GRID_AT,
+        now_fn=now_fn, sleep_fn=sleep_fn,
+    )
+    assert len(attempts) == 1
+    assert run_error is True
+    assert sleep_fn.calls == []
+
+
+def test_manifest_writer_round_trip(tmp_path):
+    writer = ManifestWriter(tmp_path, date(2026, 7, 21), "100000-abcdef")
+    writer.write({"kind": "header", "run_id": "100000-abcdef", "date": "2026-07-21",
+                  "symbol": "005930", "artifact_id": "ppo-fs3-x",
+                  "portfolio": {"units_held": 0, "shares_held": 0.0,
+                                "bars_since_entry": 0, "available_cash": 10000.0},
+                  "git_sha": "abc1234", "config": {"server": "http://s"}})
+    writer.write({"kind": "grid", "scheduled_bar_ts": SCHEDULED,
+                  "scheduled_at": SCHEDULED, "attempts": [], "response_bar_ts": None,
+                  "outcome": "ok"})
+
+    lines = [json.loads(line) for line in writer.path.read_text(encoding="utf-8")
+             .splitlines() if line.strip()]
+    header, grid = lines[0], lines[1]
+    for key in ("run_id", "date", "symbol", "artifact_id", "portfolio", "git_sha",
+                "config"):
+        assert key in header
+    for key in ("scheduled_bar_ts", "scheduled_at", "attempts", "response_bar_ts",
+                "outcome"):
+        assert key in grid

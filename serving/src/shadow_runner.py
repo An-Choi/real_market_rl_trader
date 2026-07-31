@@ -153,6 +153,45 @@ def _call_predict(client: httpx.Client, base_url: str, symbol: str, portfolio: d
         return None, {}, int((time_mod.monotonic() - started) * 1000), type(exc).__name__
 
 
+def execute_grid_slot(client, server: str, symbol: str, portfolio: dict,
+                      scheduled_bar_ts_iso: str, next_grid_at, *,
+                      now_fn, sleep_fn):
+    """한 grid의 시도 루프. (attempts 리스트, 최종 outcome, response_bar_ts, run_error) 반환.
+
+    run()의 기존 루프 본문과 문자 그대로 동일한 로직 — now/sleep만 주입.
+    """
+    attempts: list = []
+    run_error = False
+    outcome, error_code, response_bar_ts = "skipped", None, None
+    for attempt in (1, 2):
+        status, body, latency_ms, transport_error = _call_predict(
+            client, server, symbol, portfolio)
+        if transport_error is not None:
+            outcome, error_code = "error", transport_error
+            http_status = status  # PARSE_ERROR면 status 있음, transport면 None
+            response_bar_ts = None
+        else:
+            http_status = status
+            outcome, error_code, response_bar_ts = classify_response(
+                scheduled_bar_ts_iso, status, body)
+        attempts.append({"attempt": attempt, "http_status": http_status,
+                         "error_code": error_code, "latency_ms": latency_ms,
+                         "response_bar_ts": response_bar_ts,
+                         "outcome": outcome})
+        do_retry, wait_s, is_run_error = retry_policy(outcome, error_code)
+        run_error = run_error or is_run_error
+        if not do_retry or attempt == 2:
+            break
+        if not can_retry(now_fn(), next_grid_at, wait_s, WORST_BUDGET_SECONDS):
+            # 재시도 포기 (spec §2): 명시적 응답을 받았으면 그 outcome 보존,
+            # 무응답(transport 실패)이면 skipped
+            if http_status is None:
+                outcome = "skipped"
+            break
+        sleep_fn(wait_s)
+    return attempts, outcome, response_bar_ts, run_error
+
+
 def run(argv=None) -> int:
     from models.artifact import current_git_sha
 
@@ -209,35 +248,12 @@ def run(argv=None) -> int:
             counts["skipped"] = counts.get("skipped", 0) + 1
             continue
 
-        attempts: list = []
-        outcome, error_code, response_bar_ts = "skipped", None, None
-        for attempt in (1, 2):
-            status, body, latency_ms, transport_error = _call_predict(
-                client, args.server, args.symbol, portfolio)
-            if transport_error is not None:
-                outcome, error_code = "error", transport_error
-                http_status = status  # PARSE_ERROR면 status 있음, transport면 None
-                response_bar_ts = None
-            else:
-                http_status = status
-                outcome, error_code, response_bar_ts = classify_response(
-                    _iso_kst(bar_ts), status, body)
-            attempts.append({"attempt": attempt, "http_status": http_status,
-                             "error_code": error_code, "latency_ms": latency_ms,
-                             "response_bar_ts": response_bar_ts,
-                             "outcome": outcome})
-            do_retry, wait_s, is_run_error = retry_policy(outcome, error_code)
-            run_error = run_error or is_run_error
-            if not do_retry or attempt == 2:
-                break
-            if not can_retry(pd.Timestamp.now(tz=KST), next_grid_at,
-                             wait_s, WORST_BUDGET_SECONDS):
-                # 재시도 포기 (spec §2): 명시적 응답을 받았으면 그 outcome 보존,
-                # 무응답(transport 실패)이면 skipped
-                if http_status is None:
-                    outcome = "skipped"
-                break
-            time_mod.sleep(wait_s)
+        attempts, outcome, response_bar_ts, slot_run_error = execute_grid_slot(
+            client, args.server, args.symbol, portfolio, _iso_kst(bar_ts),
+            next_grid_at, now_fn=lambda: pd.Timestamp.now(tz=KST),
+            sleep_fn=time_mod.sleep,
+        )
+        run_error = run_error or slot_run_error
         writer.write({"kind": "grid", "scheduled_bar_ts": _iso_kst(bar_ts),
                       "scheduled_at": _iso_kst(scheduled_at), "attempts": attempts,
                       "response_bar_ts": response_bar_ts, "outcome": outcome})
