@@ -1,7 +1,9 @@
 """serving 테스트 경로 설정 + 공용 합성 데이터 픽스처."""
 from __future__ import annotations
 
+import dataclasses
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -64,3 +66,58 @@ def raw_data_dir(tmp_path, minute_data) -> Path:
         out.mkdir(parents=True, exist_ok=True)
         grp.reset_index(drop=True).to_parquet(out / f"{period}.parquet")
     return tmp_path
+
+
+@pytest.fixture(scope="session")
+def tiny_artifact_dir(tmp_path_factory, minute_data):
+    """학습 없이 seed 고정 build()만 한 MaskablePPO artifact (format v3).
+
+    랜덤 초기화 정책도 deterministic=True predict는 결정론적이라
+    parity·inference 테스트에 충분하다.
+    """
+    from data.feature_engineer import FeatureEngineer
+    from env.trading_env import TradingEnvironment
+    from friction.friction_model import FrictionModel
+    from models.artifact import (
+        EXPECTED_ACTION_LABELS, ArtifactMetadata, save_artifact,
+    )
+    from models.rl_agent import make_rl_agent
+
+    fe = FeatureEngineer()
+    featured = fe.transform(minute_data)
+    friction = FrictionModel(fee_rate=0.00018, spread_rate=0.001, slippage_rate=0.0,
+                             execution_uncertainty_rate=0.0, sell_tax_rate=0.002,
+                             dynamic_spread=True, date_based_sell_tax=True)
+    env = TradingEnvironment(
+        market_data=featured,
+        feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
+        initial_cash=10_000.0, unit_fraction=0.199, max_units=5,
+        friction_model=friction, episode_days=1,
+        duration_horizon_bars=1280, nominal_bars_per_day=64,
+        feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
+    )
+    agent = make_rl_agent(model_name="MaskablePPO", seed=42)
+    agent.build(env)
+    meta = ArtifactMetadata(
+        artifact_format_version=3,
+        artifact_id="ppo-fs3-test",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        algo="MaskablePPO",
+        policy="MlpPolicy",
+        feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
+        feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
+        portfolio_state_fields=["units_held_frac", "unrealized_pnl_norm",
+                                "holding_duration_norm", "tod_frac"],
+        observation_dim=13,
+        action_space={"type": "discrete", "n": 3,
+                      "labels": list(EXPECTED_ACTION_LABELS)},
+        normalization=None,
+        train_git_sha="test",
+        train_data={"symbols": ["005930"], "start": "2026-06-01", "end": "2026-06-16"},
+        env_params={"unit_fraction": 0.199, "max_units": 5, "initial_cash": 10_000.0,
+                    "episode_days": 1, "duration_horizon_bars": 1280,
+                    "nominal_bars_per_day": 64},
+        friction_params=dataclasses.asdict(friction),
+    )
+    out = tmp_path_factory.mktemp("artifacts")
+    return save_artifact(agent, meta, out)
