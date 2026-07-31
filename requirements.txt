@@ -11,3 +11,7 @@ pyarrow
 responses
 python-dotenv
 pytest
+fastapi
+pydantic>=2
+uvicorn
+httpx
