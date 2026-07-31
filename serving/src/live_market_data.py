@@ -75,3 +75,25 @@ class LiveKISProvider:
         # 완료 분봉 causal cutoff — Historical과 동일 규칙 재적용 (당일분 포함)
         merged = merged[ts + _MINUTE <= as_of]
         return merged.reset_index(drop=True)
+
+
+def build_provider(config):
+    """config.provider에 따른 provider 팩토리 — main.py 기동 경로 전용.
+
+    live에서 KISConfig.from_env 실패(환경변수 누락)는 변환하지 않는다:
+    503이 아니라 서버가 뜨지 않아야 하는 기동 실패다 (spec §1).
+    """
+    from config import ServingConfig  # 순환 없음 — 타입 문서화용
+    if config.provider == "historical":
+        from market_data import HistoricalParquetProvider
+
+        return HistoricalParquetProvider(config.data_dir, warmup_days=config.warmup_days)
+    from pipeline.kis_auth import KISAuth, KISConfig
+
+    kis_config = KISConfig.from_env(config.kis_token_cache)
+    return LiveKISProvider(
+        data_dir=config.data_dir,
+        warmup_days=config.warmup_days,
+        auth=KISAuth(kis_config),
+        rate_limit_sleep=config.kis_rate_limit_sleep,
+    )
