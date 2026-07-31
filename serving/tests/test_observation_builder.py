@@ -116,6 +116,19 @@ def test_causality_future_rows_do_not_change_past(minute_data):
     assert base.bar_ts == with_future.bar_ts
 
 
+def test_corrupt_numeric_column_does_not_raise_insufficient_history(minute_data):
+    # 데이터 손상(비수치 Close)이 warmup 부족과 동일한 InsufficientHistoryError로
+    # 매핑되면 실제 데이터 버그가 조용히 fail-closed 503으로 위장된다 — 다른
+    # 예외(전파된 TypeError/ValueError 등)여야 한다.
+    corrupt = minute_data.copy()
+    corrupt["Close"] = "corrupt"
+    day = _last_day(corrupt)
+    as_of = pd.Timestamp(f"{day} 11:00:00", tz=TZ)
+    with pytest.raises(Exception) as excinfo:
+        _build(corrupt, as_of)
+    assert not isinstance(excinfo.value, InsufficientHistoryError)
+
+
 def test_portfolio_fields_flow_into_observation(minute_data):
     day = _last_day(minute_data)
     as_of = pd.Timestamp(f"{day} 11:00:00", tz=TZ)

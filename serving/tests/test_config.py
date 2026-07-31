@@ -42,3 +42,64 @@ def test_load_config_rejects_nonlocal_host(tmp_path):
     )
     with pytest.raises(ValueError, match="host"):
         load_serving_config(cfg_file)
+
+
+def test_load_config_rejects_string_symbols(tmp_path):
+    # str도 "non-empty str의 iterable"이라 all(isinstance(s, str)...)를 통과해버린다
+    # — symbols: "005930"이 ["0","0","5","9","3","0"]처럼 취급되면 안 된다.
+    cfg_file = tmp_path / "serving.yaml"
+    cfg_file.write_text(
+        "artifact_dir: a\ndata_dir: d\nsymbols: '005930'\n"
+        "audit_log_dir: l\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="symbols"):
+        load_serving_config(cfg_file)
+
+
+@pytest.mark.parametrize("warmup_days", [0, -1])
+def test_load_config_rejects_nonpositive_warmup_days(tmp_path, warmup_days):
+    # warmup_days<=0이면 provider의 [-warmup_days:] slicing이 전체(또는 예상외) 범위를
+    # 선택한다 — 반드시 양의 정수여야 한다.
+    cfg_file = tmp_path / "serving.yaml"
+    cfg_file.write_text(
+        "artifact_dir: a\ndata_dir: d\nsymbols: ['005930']\n"
+        f"audit_log_dir: l\nwarmup_days: {warmup_days}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="warmup_days"):
+        load_serving_config(cfg_file)
+
+
+def test_load_config_rejects_non_integer_warmup_days(tmp_path):
+    cfg_file = tmp_path / "serving.yaml"
+    cfg_file.write_text(
+        "artifact_dir: a\ndata_dir: d\nsymbols: ['005930']\n"
+        "audit_log_dir: l\nwarmup_days: 2.5\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="warmup_days"):
+        load_serving_config(cfg_file)
+
+
+def test_load_config_rejects_nonpositive_max_bar_age_minutes(tmp_path):
+    cfg_file = tmp_path / "serving.yaml"
+    cfg_file.write_text(
+        "artifact_dir: a\ndata_dir: d\nsymbols: ['005930']\n"
+        "audit_log_dir: l\nmax_bar_age_minutes: 0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="max_bar_age_minutes"):
+        load_serving_config(cfg_file)
+
+
+@pytest.mark.parametrize("port", [0, 70000])
+def test_load_config_rejects_out_of_range_port(tmp_path, port):
+    cfg_file = tmp_path / "serving.yaml"
+    cfg_file.write_text(
+        "artifact_dir: a\ndata_dir: d\nsymbols: ['005930']\n"
+        f"audit_log_dir: l\nport: {port}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="port"):
+        load_serving_config(cfg_file)

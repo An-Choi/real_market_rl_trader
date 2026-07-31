@@ -158,6 +158,52 @@ def test_masked_action_maps_to_500_and_audited(
     assert record["error"]["code"] == "MODEL_ERROR"
 
 
+def test_negative_action_maps_to_500_model_error(
+    monkeypatch, tmp_path, raw_data_dir, tiny_artifact_dir, minute_data
+):
+    # action == -1은 Python negative indexing으로 action_mask의 마지막 원소를
+    # 읽어버려 mask 검사를 우회할 수 있다 — held 포트폴리오(mask[-1]=clear=True)에서
+    # -1을 반환하면 range check 없이는 200이 나가버린다. range check가 먼저 걸려야 한다.
+    config = ServingConfig(
+        artifact_dir=tiny_artifact_dir, data_dir=raw_data_dir,
+        symbols=["005930"], audit_log_dir=tmp_path / "logs",
+    )
+    predictor = Predictor.load(tiny_artifact_dir)
+    provider = HistoricalParquetProvider(raw_data_dir, warmup_days=config.warmup_days)
+
+    monkeypatch.setattr(predictor, "predict", lambda observation, action_mask: -1)
+    app = create_app(config, predictor, provider)
+    client = TestClient(app)
+
+    # held 포트폴리오(units_held=1)를 강제해 mask=[True, True, True] → mask[-1]=True를 만든다.
+    payload = _payload(_valid_as_of(client, minute_data),
+                       units_held=1, shares_held=0.02, bars_since_entry=1)
+    resp = client.post("/predict", json=payload)
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "MODEL_ERROR"
+
+
+def test_out_of_range_action_maps_to_500_model_error(
+    monkeypatch, tmp_path, raw_data_dir, tiny_artifact_dir, minute_data
+):
+    # action_space 밖의 큰 정수는 IndexError를 내는데, 이게 catch-all로 새어나가면
+    # 잘못된 코드(SERVING_ERROR)로 분류된다 — MODEL_ERROR여야 한다.
+    config = ServingConfig(
+        artifact_dir=tiny_artifact_dir, data_dir=raw_data_dir,
+        symbols=["005930"], audit_log_dir=tmp_path / "logs",
+    )
+    predictor = Predictor.load(tiny_artifact_dir)
+    provider = HistoricalParquetProvider(raw_data_dir, warmup_days=config.warmup_days)
+
+    monkeypatch.setattr(predictor, "predict", lambda observation, action_mask: 7)
+    app = create_app(config, predictor, provider)
+    client = TestClient(app)
+
+    resp = client.post("/predict", json=_payload(_valid_as_of(client, minute_data)))
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "MODEL_ERROR"
+
+
 def test_unexpected_error_maps_to_500_and_audited(
     monkeypatch, tmp_path, raw_data_dir, tiny_artifact_dir, minute_data
 ):

@@ -154,6 +154,11 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
         except Exception as exc:  # inference 내부 오류만 MODEL_ERROR로
             raise ModelError(f"inference failed: {exc}") from exc
 
+        if not 0 <= action < len(result.action_mask):
+            raise ModelError(
+                f"model returned out-of-range action {action}",
+                {"action": action, "n_actions": len(result.action_mask)},
+            )
         if not bool(result.action_mask[action]):
             raise ModelError(
                 f"model returned masked action {action}",

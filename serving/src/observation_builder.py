@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from data.defect_days import drop_defect_days
 from env.observation import (
     assemble_observation,
     build_portfolio_state,
@@ -54,16 +55,16 @@ def build_decision_inputs(
             "no completed minute bars at or before as_of",
             {"as_of": str(as_of)},
         )
-    try:
-        featured = feature_engineer.transform(bars_1m)
-    except ValueError as exc:
-        # 모든 날이 결손 판정으로 제거되면 파이프라인 내부 concat이
-        # ValueError("No objects to concatenate")를 낸다 — 데이터 부족과
-        # 동일한 fail-closed 503(INSUFFICIENT_HISTORY)으로 매핑한다.
+    # 모든 날이 결손 판정으로 제거되면 파이프라인 내부 concat이
+    # ValueError("No objects to concatenate")를 내는데, 이를 blanket except로 잡으면
+    # 데이터 손상·feature 버그로 인한 ValueError까지 데이터 부족으로 위장된다 —
+    # 그래서 결손-day 케이스를 transform 이전에 명시적으로 먼저 검사한다.
+    if drop_defect_days(bars_1m).empty:
         raise InsufficientHistoryError(
-            f"feature pipeline produced no rows: {exc}",
+            "no valid trading days after defect-day filtering",
             {"as_of": str(as_of), "input_rows": int(len(bars_1m))},
-        ) from exc
+        )
+    featured = feature_engineer.transform(bars_1m)
     if featured.empty:
         raise InsufficientHistoryError(
             "not enough history to produce any feature row",

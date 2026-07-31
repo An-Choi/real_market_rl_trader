@@ -36,8 +36,32 @@ def load_serving_config(path: "str | Path") -> ServingConfig:
         if key in data:
             data[key] = Path(data[key])
     cfg = ServingConfig(**data)
-    if not cfg.symbols or not all(isinstance(s, str) and s for s in cfg.symbols):
+    if (
+        not isinstance(cfg.symbols, list)
+        or not cfg.symbols
+        or not all(isinstance(s, str) and s for s in cfg.symbols)
+    ):
         raise ValueError(f"symbols must be a non-empty list of strings: {cfg.symbols!r}")
+    if (
+        isinstance(cfg.warmup_days, bool)
+        or not isinstance(cfg.warmup_days, int)
+        or cfg.warmup_days <= 0
+    ):
+        raise ValueError(f"warmup_days must be a positive int: {cfg.warmup_days!r}")
+    if (
+        isinstance(cfg.max_bar_age_minutes, bool)
+        or not isinstance(cfg.max_bar_age_minutes, int)
+        or cfg.max_bar_age_minutes <= 0
+    ):
+        raise ValueError(
+            f"max_bar_age_minutes must be a positive int: {cfg.max_bar_age_minutes!r}"
+        )
+    if (
+        isinstance(cfg.port, bool)
+        or not isinstance(cfg.port, int)
+        or not 1 <= cfg.port <= 65535
+    ):
+        raise ValueError(f"port must be an int in 1..65535: {cfg.port!r}")
     if cfg.host not in _ALLOWED_HOSTS:
         raise ValueError(
             f"host must be one of {_ALLOWED_HOSTS} (no auth/TLS in scope): {cfg.host!r}"
