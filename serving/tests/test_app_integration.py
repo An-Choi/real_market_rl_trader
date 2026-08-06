@@ -44,6 +44,7 @@ def test_predict_happy_path(client, minute_data):
     assert body["action_mask"][0] is True
     assert body["artifact_id"] == "ppo-fs3-test"
     assert body["feature_schema_version"] == 3
+    assert body["bar_close"] > 0
 
 
 def test_predict_writes_audit_log(client, minute_data, tmp_path):
@@ -54,6 +55,7 @@ def test_predict_writes_audit_log(client, minute_data, tmp_path):
     assert record["symbol"] == "005930" and "observation" in record
     assert record["path"] == "/predict"
     assert "ts" in record and record["ts"]
+    assert "bar_close" in record
 
 
 def test_stale_data_maps_to_503_and_audited(client, minute_data, tmp_path):
