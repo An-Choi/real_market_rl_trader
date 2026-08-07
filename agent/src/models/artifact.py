@@ -492,6 +492,11 @@ def _check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
             )
 
 
+def check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
+    """Public alias — 백테스트가 종목별 env를 명시 검증할 때 사용."""
+    _check_env_compatibility(meta, env)
+
+
 def load_artifact(
     artifact_dir: "str | Path",
     env: Any = None,
