@@ -23,7 +23,7 @@ import pandas as pd
 from models.walk_forward import SplitBoundaries
 
 SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4)
-SERVING_FORMAT_VERSION = 3  # 서버는 이 버전만 수용 (spec §1 friction 계약)
+SERVING_FORMAT_VERSIONS = frozenset({3, 4})  # 서버 수용 버전 (env params 계약 동일)
 KNOWN_ACTION_TYPES = ("discrete",)
 KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize", "feature_standardization")
 FRICTION_RATE_FIELDS = (
