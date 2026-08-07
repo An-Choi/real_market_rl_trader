@@ -17,8 +17,8 @@ for path in (ENV_SRC, AGENT_SRC, PROJECT_ROOT):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-from experiments.common import load_feature_data, make_data_loader, resolve_project_path
-from models.walk_forward import split_by_trading_day
+from experiments.common import load_feature_data, make_data_loader, resolve_project_path, resolve_symbols
+from models.walk_forward import SplitBoundaries, compute_split_boundaries, split_by_trading_day
 from policies import SUPPORTED_BASELINES
 from policies.evaluation import (
     compare_baselines,
@@ -30,6 +30,51 @@ from policies.evaluation import (
 )
 from utils.config_loader import load_config
 from utils.logger import setup_logger
+
+
+def resolve_backtest_symbols(*, config, meta, cli_symbol, cli_symbols) -> list[str]:
+    """우선순위: CLI > artifact 학습 종목 > config."""
+    if cli_symbol is not None or cli_symbols is not None:
+        return resolve_symbols(config=config, cli_symbol=cli_symbol, cli_symbols=cli_symbols)
+    if meta is not None:
+        symbols = (meta.train_data or {}).get("symbols")
+        if symbols:
+            return list(symbols)
+        print(
+            "WARNING: artifact metadata has no train_data.symbols; "
+            "falling back to config symbols",
+            file=sys.stderr,
+        )
+    return resolve_symbols(config=config)
+
+
+def resolve_boundaries(*, meta, data_by_symbol, config) -> SplitBoundaries | None:
+    """경계 출처 규칙: v4 metadata 재사용 > 다종목 공유 계산 > 단일 종목 비율 fallback."""
+    if meta is not None:
+        if meta.artifact_format_version >= 4:
+            return SplitBoundaries.from_metadata(meta.train_data["split_boundaries"])
+        print(
+            f"WARNING: format v{meta.artifact_format_version} artifact has no "
+            "split boundaries; using legacy ratio split",
+            file=sys.stderr,
+        )
+        return None
+    if len(data_by_symbol) > 1:
+        purge_days = int(config.get("data", {}).get("split", {}).get("purge_days", 0))
+        return compute_split_boundaries(data_by_symbol, purge_days=purge_days)
+    return None
+
+
+def ensure_oos_artifact(meta) -> None:
+    """v4 artifact의 trained_split이 train이 아니면 OOS 결과가 아니므로 거부."""
+    if meta is None or meta.artifact_format_version < 4:
+        return
+    trained_split = meta.train_data.get("trained_split")
+    if trained_split != "train":
+        raise SystemExit(
+            f"artifact was trained on split {trained_split!r}; its backtest would not be "
+            "out-of-sample. Re-train with --split train (or use the evaluation API directly)."
+        )
 
 
 def _positive_int(value: str) -> int:
