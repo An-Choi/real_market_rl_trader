@@ -8,8 +8,13 @@ import pandas as pd
 import pytest
 
 from data.feature_engineer import FeatureEngineer
+from models import load_artifact
 from models.normalization import FeatureNormalizer
-from models.training import build_vec_training_environment, train_ppo_artifact
+from models.training import (
+    build_training_environment,
+    build_vec_training_environment,
+    train_ppo_artifact,
+)
 
 ENV_CFG = {
     "initial_cash": 10_000.0, "unit_fraction": 0.199, "max_units": 5,
@@ -147,3 +152,31 @@ def test_training_is_deterministic_for_same_seed(tmp_path):
     ):
         assert k1 == k2
         assert np.allclose(p1.cpu().numpy(), p2.cpu().numpy()), f"parameter mismatch: {k1}"
+
+
+def test_load_artifact_stays_quiet_even_when_trained_verbose(tmp_path, capsys):
+    """실제 config는 ppo.verbose=1로 학습한다 — load_artifact가 SB3의
+    "Wrapping the env..." 로그를 stdout에 흘리면 backtest.py의 단일 JSON
+    stdout 계약이 깨진다. RLAgent.load가 verbose=0을 강제해야 한다."""
+    data = {"AAA": _features(1), "BBB": _features(2)}
+    config = _config()
+    config["agent"]["ppo"]["verbose"] = 1
+    artifact_dir = train_ppo_artifact(
+        featured_data=data,
+        validation_data=None,
+        config=config,
+        total_timesteps=32,
+        seed=7,
+        artifacts_dir=tmp_path,
+        trained_split="train",
+        split_boundaries=dict(BOUNDARIES),
+    )
+    capsys.readouterr()  # 학습 중 출력은 버림 — 검사 대상은 load_artifact뿐
+
+    env = build_training_environment(
+        featured_data=data["AAA"], environment_config=ENV_CFG, friction_config=FRICTION_CFG,
+    )
+    load_artifact(artifact_dir, env=env)
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
