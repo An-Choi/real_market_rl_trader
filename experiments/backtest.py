@@ -8,6 +8,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pandas as pd
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_SRC = PROJECT_ROOT / "env" / "src"
@@ -186,15 +188,17 @@ def _fmt_metric(metrics, key, width=10):
     return f"{value:>{width}.4f}" if isinstance(value, (int, float)) else f"{'-':>{width}}"
 
 
-def _print_summary_table(per_symbol_payload: dict[str, dict]) -> None:
-    lines = [f"{'symbol':<8} {'agent':<20} {'return':>10} {'market':>10} {'mdd':>8}"]
+def _print_summary_table(per_symbol_payload: dict[str, dict], days_by_symbol: "dict[str, int] | None" = None) -> None:
+    days_by_symbol = days_by_symbol or {}
+    lines = [f"{'symbol':<8} {'days':>5} {'agent':<20} {'return':>10} {'market':>10} {'mdd':>8}"]
     for symbol, payload in per_symbol_payload.items():
+        days = days_by_symbol.get(symbol, "-")
         # compare 모드 payload는 {"results": [summary, ...]} — 한 종목당 agent별 1행
         entries = payload["results"] if "results" in payload else [payload]
         for entry in entries:
             metrics = entry.get("metrics") or entry.get("mean_metrics") or {}
             lines.append(
-                f"{symbol:<8} {str(entry.get('agent', '-')):<20} "
+                f"{symbol:<8} {days!s:>5} {str(entry.get('agent', '-')):<20} "
                 f"{_fmt_metric(metrics, 'total_return')} {_fmt_metric(metrics, 'market_return')} "
                 f"{_fmt_metric(metrics, 'max_drawdown', 8)}"
             )
@@ -286,6 +290,13 @@ def main() -> None:
         int(config["environment"].get("episode_days", 1)),
     )
 
+    # spec §12: 리포트에 종목별 evaluated split의 실제 거래일수를 표기 — --max-steps
+    # 캡과 무관하게 split 크기 자체를 보여준다 (stdout JSON 페이로드는 변경하지 않음).
+    days_by_symbol: dict[str, int] = {}
+    for symbol in symbols:
+        split_df = split_by_trading_day(data_by_symbol[symbol], split=args.split, boundaries=boundaries)
+        days_by_symbol[symbol] = int(pd.to_datetime(split_df["Timestamp"]).dt.date.nunique())
+
     per_symbol_payload: dict[str, dict] = {}
 
     if args.compare_baselines:
@@ -367,7 +378,7 @@ def main() -> None:
             json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
         )
 
-    _print_summary_table(per_symbol_payload)
+    _print_summary_table(per_symbol_payload, days_by_symbol)
 
     if len(symbols) == 1:
         print(json.dumps(per_symbol_payload[symbols[0]], indent=2, sort_keys=True))
