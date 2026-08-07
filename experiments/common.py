@@ -51,3 +51,43 @@ def load_feature_data(
             "  conda activate rl-trader-py310\n"
             f"  python scripts/backfill.py --symbols {symbol} --skip-daily"
         ) from exc
+
+
+def resolve_symbols(
+    *,
+    config: dict[str, Any],
+    cli_symbol: str | None = None,
+    cli_symbols: str | None = None,
+) -> list[str]:
+    """CLI·config 공통 종목 결정 (우선순위: --symbols > --symbol > config symbols > config symbol)."""
+    if cli_symbol is not None and cli_symbols is not None:
+        raise SystemExit("--symbol and --symbols are mutually exclusive")
+
+    raw: list[Any]
+    if cli_symbols is not None:
+        raw = cli_symbols.split(",")
+    elif cli_symbol is not None:
+        raw = [cli_symbol]
+    else:
+        data_config = config.get("data", {})
+        if "symbols" in data_config:
+            if not isinstance(data_config["symbols"], list):
+                raise SystemExit(
+                    f"config data.symbols must be a list: {data_config['symbols']!r}"
+                )
+            raw = list(data_config["symbols"])
+        elif "symbol" in data_config:
+            raw = [data_config["symbol"]]
+        else:
+            raise SystemExit("config data.symbols (or legacy data.symbol) is required")
+
+    symbols: list[str] = []
+    for token in raw:
+        if not isinstance(token, str):
+            raise SystemExit(f"symbols must be strings: {token!r}")
+        symbols.append(token.strip())
+    if not symbols or any(not token for token in symbols):
+        raise SystemExit(f"symbols must be non-empty strings: {raw!r}")
+    if len(set(symbols)) != len(symbols):
+        raise SystemExit(f"duplicate symbols are not allowed: {symbols!r}")
+    return symbols
