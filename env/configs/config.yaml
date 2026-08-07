@@ -5,7 +5,9 @@ project:
 data:
   raw_dir: data/raw
   processed_dir: data/processed
-  symbol: "005930"
+  symbols: ["005930", "000660", "034220", "066570", "009150"]
+  split:
+    purge_days: 5
   interval: 1m
 
 environment:
@@ -54,7 +56,7 @@ agent:
   tensorboard:
     enabled: true
     log_dir: runs/tensorboard
-    log_name: maskable_ppo_005930
+    log_name: maskable_ppo_multi5
   validation:
     enabled: true
     eval_freq: 25000
