@@ -89,9 +89,14 @@ def test_maskable_training_selects_validation_checkpoint_and_reloads(
     metadata = load_metadata(artifact_path)
     validation = metadata.training_params["validation"]
     assert metadata.algo == "MaskablePPO"
+    assert validation["metric"] == "mean_total_return"
     assert validation["evaluation_count"] >= 3
     assert validation["best_timestep"] in {0, 8, 16}
-    assert validation["best"]["total_return"] >= validation["latest"]["total_return"]
+    assert (
+        validation["best"]["mean_total_return"]
+        >= validation["latest"]["mean_total_return"]
+    )
+    assert set(validation["best"]["per_symbol"]) == {"005930"}
 
     env = build_training_environment(
         featured_data=validation_data,

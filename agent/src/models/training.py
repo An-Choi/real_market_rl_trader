@@ -110,7 +110,7 @@ def train_ppo_artifact(
                 normalizer,
             )
         validation_callback = FullSplitValidationCallback(
-            validation_environment,
+            {symbol: validation_environment},
             eval_freq=int(validation_config.get("eval_freq", 25_000)),
             use_action_masks=config["agent"]["rl_model_name"] == "MaskablePPO",
             seed=int(validation_config.get("seed", seed)),
