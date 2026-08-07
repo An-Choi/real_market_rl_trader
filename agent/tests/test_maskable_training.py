@@ -70,14 +70,21 @@ def test_maskable_training_selects_validation_checkpoint_and_reloads(
     train_data = _featured_data("2025-06-02", 4)
     validation_data = _featured_data("2025-07-01", 2)
     config = _config()
+    max_timestamp = train_data["Timestamp"].max()
+    boundaries = {
+        "train_end_date": str(max_timestamp.date()),
+        "validation_end_date": str(validation_data["Timestamp"].max().date()),
+        "purge_days": 0,
+    }
     artifact_path = train_ppo_artifact(
-        featured_data=train_data,
-        validation_data=validation_data,
-        symbol="005930",
+        featured_data={"005930": train_data},
+        validation_data={"005930": validation_data},
         config=config,
         total_timesteps=16,
         seed=0,
         artifacts_dir=tmp_path / "artifacts",
+        trained_split="train",
+        split_boundaries=boundaries,
         model_kwargs={
             "n_steps": 8,
             "batch_size": 4,

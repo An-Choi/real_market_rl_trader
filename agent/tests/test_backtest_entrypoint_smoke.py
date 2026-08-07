@@ -184,10 +184,17 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
         "verbose": 0,
     })
     agent.train(env, total_timesteps=8)
+    max_timestamp = pd.to_datetime(featured_data["Timestamp"]).max()
     metadata = make_training_metadata(
         agent=agent,
-        symbol=symbol,
-        featured_data=featured_data,
+        symbols=[symbol],
+        featured_data_by_symbol={symbol: featured_data},
+        trained_split="train",
+        split_boundaries={
+            "train_end_date": str(max_timestamp.date()),
+            "validation_end_date": str((max_timestamp + pd.Timedelta(days=1)).date()),
+            "purge_days": 0,
+        },
         feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         env_params={

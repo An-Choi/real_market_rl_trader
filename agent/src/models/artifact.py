@@ -325,49 +325,15 @@ def make_training_metadata(
     feature_columns: list[str],
     env_params: dict[str, Any],
     friction_params: dict[str, Any],
+    symbols: list[str],
+    featured_data_by_symbol: dict[str, Any],
+    trained_split: str,
+    split_boundaries: dict[str, Any],
     portfolio_state_fields: list[str] | None = None,
     normalization: dict[str, Any] | None = None,
     training_params: dict[str, Any] | None = None,
-    # v4 경로
-    symbols: list[str] | None = None,
-    featured_data_by_symbol: dict[str, Any] | None = None,
-    trained_split: str | None = None,
-    split_boundaries: dict[str, Any] | None = None,
-    # legacy v3 경로 — Task 6에서 제거 (training.py 구형 호출부 과도기 지원)
-    symbol: str | None = None,
-    featured_data: Any | None = None,
 ) -> ArtifactMetadata:
-    """Build versioned artifact metadata from a completed training run."""
-    if symbol is not None:
-        if symbols is not None or featured_data_by_symbol is not None:
-            raise ArtifactError("pass either legacy (symbol) or v4 (symbols) arguments, not both")
-        # ---- legacy v3 경로: 기존 함수 본문을 그대로 유지 ----
-        portfolio_fields = portfolio_state_fields or list(DEFAULT_PORTFOLIO_STATE_FIELDS)
-        timestamps = featured_data["Timestamp"]
-        train_start = str(timestamps.min().date()) if not timestamps.empty else "unknown"
-        train_end = str(timestamps.max().date()) if not timestamps.empty else "unknown"
-
-        return ArtifactMetadata(
-            artifact_format_version=3,
-            artifact_id=make_artifact_id(agent.model_name, feature_schema_version),
-            created_at=datetime.now(timezone.utc).isoformat(),
-            algo=agent.model_name,
-            policy=agent.policy,
-            feature_schema_version=feature_schema_version,
-            feature_columns=list(feature_columns),
-            portfolio_state_fields=portfolio_fields,
-            observation_dim=len(feature_columns) + len(portfolio_fields),
-            action_space={"type": "discrete", "n": 3, "labels": list(EXPECTED_ACTION_LABELS)},
-            normalization=normalization,
-            train_git_sha=current_git_sha(),
-            train_data={"symbols": [symbol], "start": train_start, "end": train_end},
-            env_params=env_params,
-            friction_params=dict(friction_params),
-            training_params=dict(training_params or {}),
-        )
-
-    if symbols is None or featured_data_by_symbol is None or trained_split is None or split_boundaries is None:
-        raise ArtifactError("v4 metadata requires symbols, featured_data_by_symbol, trained_split, split_boundaries")
+    """Build versioned artifact metadata from a completed training run (format v4)."""
     portfolio_fields = portfolio_state_fields or list(DEFAULT_PORTFOLIO_STATE_FIELDS)
     if set(featured_data_by_symbol) != set(symbols):
         raise ArtifactError(
