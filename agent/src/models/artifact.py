@@ -7,6 +7,7 @@ load_metadata()는 SB3 없이 동작해야 한다(서버가 모델 로드 전에
 from __future__ import annotations
 
 import dataclasses
+import datetime as _datetime
 import json
 import math
 import shutil
@@ -17,8 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SUPPORTED_FORMAT_VERSIONS = (1, 2, 3)
-SERVING_FORMAT_VERSION = 3  # 서버는 이 버전만 수용 (spec §1 friction 계약)
+import pandas as pd
+
+from models.walk_forward import SplitBoundaries
+
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4)
+SERVING_FORMAT_VERSIONS = frozenset({3, 4})  # 서버 수용 버전 (env params 계약 동일)
 KNOWN_ACTION_TYPES = ("discrete",)
 KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize", "feature_standardization")
 FRICTION_RATE_FIELDS = (
@@ -37,6 +42,14 @@ REQUIRED_ENV_PARAMS_BY_VERSION = {
         "nominal_bars_per_day",
     ),
     3: (
+        "unit_fraction",
+        "max_units",
+        "initial_cash",
+        "episode_days",
+        "duration_horizon_bars",
+        "nominal_bars_per_day",
+    ),
+    4: (
         "unit_fraction",
         "max_units",
         "initial_cash",
@@ -220,36 +233,132 @@ class ArtifactMetadata:
             )
         if not isinstance(self.training_params, dict):
             raise ArtifactError("training_params must be a dict")
+        if self.artifact_format_version >= 4:
+            self._validate_v4_train_data()
+
+    def _validate_v4_train_data(self) -> None:
+        td = self.train_data
+        if not isinstance(td, dict):
+            raise ArtifactError(f"train_data must be a dict: {td!r}")
+
+        symbols = td.get("symbols")
+        if (
+            not isinstance(symbols, list)
+            or not symbols
+            or not all(isinstance(s, str) and s.strip() for s in symbols)
+        ):
+            raise ArtifactError(f"train_data.symbols must be non-empty strings: {symbols!r}")
+        if len(set(symbols)) != len(symbols):
+            raise ArtifactError(f"train_data.symbols must not contain duplicates: {symbols!r}")
+
+        trained_split = td.get("trained_split")
+        if trained_split not in ("all", "train", "validation", "test"):
+            raise ArtifactError(f"invalid train_data.trained_split: {trained_split!r}")
+
+        try:
+            boundaries = SplitBoundaries.from_metadata(td.get("split_boundaries"))
+        except ValueError as exc:
+            raise ArtifactError(f"invalid train_data.split_boundaries: {exc}") from exc
+
+        per_symbol = td.get("per_symbol")
+        if not isinstance(per_symbol, dict):
+            raise ArtifactError(f"train_data.per_symbol must be a dict: {per_symbol!r}")
+        if set(per_symbol) != set(symbols):
+            raise ArtifactError(
+                f"train_data.per_symbol keys must equal symbols: "
+                f"{sorted(per_symbol)} != {sorted(symbols)}"
+            )
+        starts, ends = [], []
+        for symbol, entry in per_symbol.items():
+            if not isinstance(entry, dict):
+                raise ArtifactError(f"per_symbol[{symbol!r}] must be a dict: {entry!r}")
+            try:
+                start = _datetime.date.fromisoformat(entry["start"])
+                end = _datetime.date.fromisoformat(entry["end"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ArtifactError(
+                    f"per_symbol[{symbol!r}] start/end must be ISO dates: {entry!r}"
+                ) from exc
+            if start > end:
+                raise ArtifactError(f"per_symbol[{symbol!r}] start > end: {entry!r}")
+            trading_days = entry.get("trading_days")
+            if isinstance(trading_days, bool) or not isinstance(trading_days, int) or trading_days <= 0:
+                raise ArtifactError(
+                    f"per_symbol[{symbol!r}].trading_days must be a positive int: {trading_days!r}"
+                )
+            starts.append(start)
+            ends.append(end)
+
+            if trained_split == "train" and end > boundaries.train_end_date:
+                raise ArtifactError(
+                    f"trained_split='train' but per_symbol[{symbol!r}].end {end} > "
+                    f"train_end_date {boundaries.train_end_date}"
+                )
+            if trained_split == "validation" and not (
+                start > boundaries.train_end_date and end <= boundaries.validation_end_date
+            ):
+                raise ArtifactError(
+                    f"trained_split='validation' but per_symbol[{symbol!r}] range "
+                    f"[{start}, {end}] is outside the validation window"
+                )
+            if trained_split == "test" and start <= boundaries.validation_end_date:
+                raise ArtifactError(
+                    f"trained_split='test' but per_symbol[{symbol!r}].start {start} <= "
+                    f"validation_end_date {boundaries.validation_end_date}"
+                )
+
+        if td.get("start") != min(starts).isoformat() or td.get("end") != max(ends).isoformat():
+            raise ArtifactError(
+                f"train_data.start/end must equal per_symbol min/max: "
+                f"{td.get('start')!r}/{td.get('end')!r}"
+            )
 
 
-def make_artifact_id(algo: str, feature_schema_version: int) -> str:
-    """생성 시점 포함한 artifact ID: "{algo소문자}-fs{v}-{YYYYMMDD-HHMMSS}" (UTC)."""
+def make_artifact_id(algo: str, feature_schema_version: int, n_symbols: int = 1) -> str:
+    """생성 시점 포함 artifact ID: "{algo소문자}-fs{v}-s{n}-{YYYYMMDD-HHMMSS}" (UTC)."""
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"{algo.lower()}-fs{feature_schema_version}-{ts}"
+    return f"{algo.lower()}-fs{feature_schema_version}-s{n_symbols}-{ts}"
 
 
 def make_training_metadata(
     *,
     agent: Any,
-    symbol: str,
-    featured_data: Any,
     feature_schema_version: int,
     feature_columns: list[str],
     env_params: dict[str, Any],
     friction_params: dict[str, Any],
+    symbols: list[str],
+    featured_data_by_symbol: dict[str, Any],
+    trained_split: str,
+    split_boundaries: dict[str, Any],
     portfolio_state_fields: list[str] | None = None,
     normalization: dict[str, Any] | None = None,
     training_params: dict[str, Any] | None = None,
 ) -> ArtifactMetadata:
-    """Build versioned artifact metadata from a completed training run."""
+    """Build versioned artifact metadata from a completed training run (format v4)."""
     portfolio_fields = portfolio_state_fields or list(DEFAULT_PORTFOLIO_STATE_FIELDS)
-    timestamps = featured_data["Timestamp"]
-    train_start = str(timestamps.min().date()) if not timestamps.empty else "unknown"
-    train_end = str(timestamps.max().date()) if not timestamps.empty else "unknown"
+    if set(featured_data_by_symbol) != set(symbols):
+        raise ArtifactError(
+            f"featured_data_by_symbol keys must equal symbols: "
+            f"{sorted(featured_data_by_symbol)} != {sorted(symbols)}"
+        )
 
-    return ArtifactMetadata(
-        artifact_format_version=3,
-        artifact_id=make_artifact_id(agent.model_name, feature_schema_version),
+    per_symbol: dict[str, dict[str, Any]] = {}
+    for sym in symbols:
+        timestamps = pd.to_datetime(featured_data_by_symbol[sym]["Timestamp"])
+        if timestamps.empty:
+            raise ArtifactError(f"featured data for {sym!r} is empty")
+        per_symbol[sym] = {
+            "start": str(timestamps.min().date()),
+            "end": str(timestamps.max().date()),
+            "trading_days": int(timestamps.dt.date.nunique()),
+        }
+    global_start = min(entry["start"] for entry in per_symbol.values())
+    global_end = max(entry["end"] for entry in per_symbol.values())
+
+    meta = ArtifactMetadata(
+        artifact_format_version=4,
+        artifact_id=make_artifact_id(agent.model_name, feature_schema_version, len(symbols)),
         created_at=datetime.now(timezone.utc).isoformat(),
         algo=agent.model_name,
         policy=agent.policy,
@@ -260,11 +369,20 @@ def make_training_metadata(
         action_space={"type": "discrete", "n": 3, "labels": list(EXPECTED_ACTION_LABELS)},
         normalization=normalization,
         train_git_sha=current_git_sha(),
-        train_data={"symbols": [symbol], "start": train_start, "end": train_end},
+        train_data={
+            "symbols": list(symbols),
+            "start": global_start,
+            "end": global_end,
+            "trained_split": trained_split,
+            "split_boundaries": dict(split_boundaries),
+            "per_symbol": per_symbol,
+        },
         env_params=env_params,
         friction_params=dict(friction_params),
         training_params=dict(training_params or {}),
     )
+    meta.validate()  # 저장 경로 진입 전 실측 기반 fail-closed (§8.1b)
+    return meta
 
 
 def load_metadata(artifact_dir: "str | Path") -> ArtifactMetadata:
@@ -374,6 +492,11 @@ def _check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
                 f"env friction {env_friction!r} != artifact friction_params "
                 f"{meta.friction_params!r}; action mask semantics would silently differ"
             )
+
+
+def check_env_compatibility(meta: ArtifactMetadata, env: Any) -> None:
+    """Public alias — 백테스트가 종목별 env를 명시 검증할 때 사용."""
+    _check_env_compatibility(meta, env)
 
 
 def load_artifact(

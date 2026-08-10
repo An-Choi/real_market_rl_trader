@@ -16,7 +16,7 @@ from friction.friction_model import FrictionModel
 from models.artifact import (
     DEFAULT_PORTFOLIO_STATE_FIELDS,
     EXPECTED_ACTION_LABELS,
-    SERVING_FORMAT_VERSION,
+    SERVING_FORMAT_VERSIONS,
     ArtifactError,
     ArtifactMetadata,
     load_artifact,
@@ -25,9 +25,9 @@ from models.artifact import (
 
 
 def _validate_serving_expectations(meta: ArtifactMetadata) -> None:
-    if meta.artifact_format_version != SERVING_FORMAT_VERSION:
+    if meta.artifact_format_version not in SERVING_FORMAT_VERSIONS:
         raise ArtifactError(
-            f"serving accepts artifact format v{SERVING_FORMAT_VERSION} only, "
+            f"serving accepts artifact format v3/v4 only, "
             f"got v{meta.artifact_format_version} — re-export the artifact"
         )
     if meta.feature_schema_version != FeatureEngineer.FEATURE_SCHEMA_VERSION:
@@ -50,7 +50,7 @@ def _validate_serving_expectations(meta: ArtifactMetadata) -> None:
             f"artifact action labels {meta.action_space.get('labels')!r} != "
             f"{EXPECTED_ACTION_LABELS!r}"
         )
-    # friction_params 존재·타입은 format v3의 metadata.validate()가 보장한다.
+    # friction_params 존재·타입은 format v3/v4의 metadata.validate()가 보장한다.
 
 
 class Predictor:

@@ -81,8 +81,19 @@ class RLAgent:
         self.model.save(path)
 
     def load(self, path: str | Path, env: Any | None = None) -> None:
-        """Load a model from disk."""
-        self.model = self._model_class().load(path, env=env)
+        """Load a model from disk.
+
+        Forces verbose=0 regardless of the saved model's training-time verbosity.
+        SB3's ``load()`` wraps ``env`` (printing "Wrapping the env...") using the
+        *saved* verbose value before applying any ``**kwargs`` override, so a
+        plain ``verbose=0`` kwarg alone would not suppress that print. Passing it
+        via ``custom_objects`` replaces the deserialized value up front, so
+        eval/serving load paths never let SB3 write to stdout ahead of the
+        single-JSON stdout contract used by backtest.py and friends.
+        """
+        self.model = self._model_class().load(
+            path, env=env, custom_objects={"verbose": 0}, verbose=0
+        )
 
     def _model_class(self) -> Any:
         if self.model_name == "PPO":

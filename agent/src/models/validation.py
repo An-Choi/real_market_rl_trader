@@ -30,7 +30,7 @@ class FullSplitValidationCallback(BaseCallback):
 
     def __init__(
         self,
-        evaluation_env: Any,
+        evaluation_envs: dict[str, Any],
         *,
         eval_freq: int,
         use_action_masks: bool,
@@ -41,15 +41,17 @@ class FullSplitValidationCallback(BaseCallback):
         super().__init__(verbose=verbose)
         if eval_freq <= 0:
             raise ValueError("validation eval_freq must be positive")
-        self.evaluation_env = evaluation_env
+        if not evaluation_envs:
+            raise ValueError("evaluation_envs must not be empty")
+        self.evaluation_envs = dict(evaluation_envs)
         self.eval_freq = int(eval_freq)
         self.use_action_masks = bool(use_action_masks)
         self.seed = int(seed)
         self.deterministic = bool(deterministic)
         self.best_score = float("-inf")
         self.best_timestep: int | None = None
-        self.best_snapshot: ValidationSnapshot | None = None
-        self.latest_snapshot: ValidationSnapshot | None = None
+        self.best_snapshot: dict[str, ValidationSnapshot] | None = None
+        self.latest_snapshot: dict[str, ValidationSnapshot] | None = None
         self.evaluation_count = 0
         self._last_evaluation_timestep: int | None = None
         self._best_parameters: dict[str, Any] | None = None
@@ -72,26 +74,33 @@ class FullSplitValidationCallback(BaseCallback):
             self.model.set_parameters(self._best_parameters, exact_match=True)
 
     def _evaluate_and_maybe_update(self) -> None:
-        snapshot = self._run_full_split()
-        self.latest_snapshot = snapshot
+        snapshots = self._run_all_splits()
+        mean_return = float(
+            np.mean([snap.total_return for snap in snapshots.values()])
+        )
+        self.latest_snapshot = snapshots
         self.evaluation_count += 1
         self._last_evaluation_timestep = self.num_timesteps
 
-        if snapshot.total_return > self.best_score:
-            self.best_score = snapshot.total_return
-            self.best_timestep = snapshot.timestep
-            self.best_snapshot = snapshot
+        if mean_return > self.best_score:
+            self.best_score = mean_return
+            self.best_timestep = int(self.num_timesteps)
+            self.best_snapshot = snapshots
             self._best_parameters = copy.deepcopy(self.model.get_parameters())
             if self.verbose:
                 print(
-                    "Validation best updated at "
-                    f"{snapshot.timestep} steps: {snapshot.total_return:.4%}"
+                    f"Validation best updated at {self.num_timesteps} steps: {mean_return:.4%}"
                 )
-        self._record(snapshot)
+        self._record(snapshots, mean_return)
 
-    def _run_full_split(self) -> ValidationSnapshot:
-        env = self.evaluation_env
-        dates = tuple(self._env_attr("available_dates"))
+    def _run_all_splits(self) -> dict[str, ValidationSnapshot]:
+        return {
+            symbol: self._run_full_split_for(env)
+            for symbol, env in self.evaluation_envs.items()
+        }
+
+    def _run_full_split_for(self, env: Any) -> ValidationSnapshot:
+        dates = tuple(self._env_attr(env, "available_dates"))
         if not dates:
             raise ValueError("validation environment has no trading dates")
         observation, reset_info = env.reset(
@@ -108,7 +117,7 @@ class FullSplitValidationCallback(BaseCallback):
         while not done:
             predict_kwargs: dict[str, Any] = {"deterministic": self.deterministic}
             if self.use_action_masks:
-                predict_kwargs["action_masks"] = self._env_attr("action_masks")()
+                predict_kwargs["action_masks"] = self._env_attr(env, "action_masks")()
             action, _ = self.model.predict(observation, **predict_kwargs)
             action_int = int(action)
             observation, _, terminated, truncated, info = env.step(action_int)
@@ -119,7 +128,7 @@ class FullSplitValidationCallback(BaseCallback):
             trade_count += int(trade_value > 0.0)
             done = bool(terminated or truncated)
 
-        liquidation_cost = float(self._env_attr("estimate_liquidation_cost")())
+        liquidation_cost = float(self._env_attr(env, "estimate_liquidation_cost")())
         final_value = portfolio_values[-1] - liquidation_cost
         portfolio_values[-1] = final_value
         values = np.asarray(portfolio_values, dtype=np.float64)
@@ -138,25 +147,43 @@ class FullSplitValidationCallback(BaseCallback):
             clear_action_rate=float(action_counts[2] / action_total),
         )
 
-    def _env_attr(self, name: str) -> Any:
+    def _env_attr(self, env: Any, name: str) -> Any:
         try:
-            return self.evaluation_env.get_wrapper_attr(name)
+            return env.get_wrapper_attr(name)
         except AttributeError:
-            return getattr(self.evaluation_env.unwrapped, name)
+            return getattr(env.unwrapped, name)
 
-    def _record(self, snapshot: ValidationSnapshot) -> None:
-        for key, value in asdict(snapshot).items():
-            if key != "timestep":
-                self.logger.record(f"validation/{key}", float(value))
-        self.logger.record("validation/best_total_return", float(self.best_score))
+    def _record_value(self, key: str, value: float) -> None:
+        self.logger.record(key, float(value))
+
+    def _record(
+        self, snapshots: dict[str, ValidationSnapshot], mean_return: float
+    ) -> None:
+        for symbol, snap in snapshots.items():
+            self._record_value(f"validation/return_{symbol}", snap.total_return)
+        self._record_value("validation/mean_total_return", mean_return)
+        self._record_value("validation/best_mean_total_return", self.best_score)
 
     def summary(self) -> dict[str, Any]:
         """Return JSON-serializable model-selection metadata."""
+
+        def _pack(
+            snapshots: dict[str, ValidationSnapshot] | None,
+        ) -> dict[str, Any] | None:
+            if snapshots is None:
+                return None
+            return {
+                "mean_total_return": float(
+                    np.mean([s.total_return for s in snapshots.values()])
+                ),
+                "per_symbol": {sym: asdict(s) for sym, s in snapshots.items()},
+            }
+
         return {
-            "metric": "total_return",
+            "metric": "mean_total_return",
             "eval_freq": self.eval_freq,
             "evaluation_count": self.evaluation_count,
             "best_timestep": self.best_timestep,
-            "best": asdict(self.best_snapshot) if self.best_snapshot is not None else None,
-            "latest": asdict(self.latest_snapshot) if self.latest_snapshot is not None else None,
+            "best": _pack(self.best_snapshot),
+            "latest": _pack(self.latest_snapshot),
         }
