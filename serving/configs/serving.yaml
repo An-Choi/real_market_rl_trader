@@ -6,3 +6,6 @@ max_bar_age_minutes: 10
 warmup_days: 30
 host: 127.0.0.1
 port: 8000
+provider: historical          # historical | live (live = 당일 KIS 조회 병합)
+kis_token_cache: data/.kis_token.json
+kis_rate_limit_sleep: 0.5

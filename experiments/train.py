@@ -16,9 +16,14 @@ for path in (ENV_SRC, AGENT_SRC, PROJECT_ROOT):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-from experiments.common import load_feature_data, make_data_loader, resolve_project_path
+from experiments.common import (
+    load_feature_data,
+    make_data_loader,
+    resolve_project_path,
+    resolve_symbols,
+)
 from models.training import train_ppo_artifact
-from models.walk_forward import split_by_trading_day
+from models.walk_forward import compute_split_boundaries, split_by_trading_day
 from utils.config_loader import load_config
 from utils.logger import setup_logger
 
@@ -33,6 +38,12 @@ def _positive_int(value: str) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train an RL policy on prepared market data")
     parser.add_argument("--symbol", type=str, default=None)
+    parser.add_argument(
+        "--symbols",
+        type=str,
+        default=None,
+        help="Comma-separated symbols, e.g. 005930,000660",
+    )
     parser.add_argument("--total-timesteps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--split", choices=("all", "train", "validation", "test"), default="train")
@@ -78,7 +89,8 @@ def main() -> None:
     if args.episode_days is not None:
         config["environment"]["episode_days"] = args.episode_days
 
-    symbol = args.symbol or config["data"]["symbol"]
+    symbols = resolve_symbols(config=config, cli_symbol=args.symbol, cli_symbols=args.symbols)
+    purge_days = int(config["data"].get("split", {}).get("purge_days", 0))
     total_timesteps = args.total_timesteps or config["agent"]["total_timesteps"]
     seed = args.seed if args.seed is not None else config.get("seed", 42)
     tensorboard_config = config["agent"].setdefault("tensorboard", {})
@@ -99,23 +111,32 @@ def main() -> None:
         )
 
     data_loader = make_data_loader(project_root=PROJECT_ROOT, config=config)
-    all_featured_data = load_feature_data(
-        symbol=symbol,
-        data_loader=data_loader,
-        force_rebuild=args.force_rebuild,
-    )
-    featured_data = split_by_trading_day(all_featured_data, split=args.split)
+    all_data = {
+        symbol: load_feature_data(
+            symbol=symbol, data_loader=data_loader, force_rebuild=args.force_rebuild
+        )
+        for symbol in symbols
+    }
+    boundaries = compute_split_boundaries(all_data, purge_days=purge_days)
+    logger.info("Shared split boundaries: %s", boundaries.to_metadata())
+
+    featured_data = {
+        symbol: split_by_trading_day(df, split=args.split, boundaries=boundaries)
+        for symbol, df in all_data.items()
+    }
     validation_data = None
     if args.split == "train" and validation_config.get("enabled", True):
-        validation_data = split_by_trading_day(
-            all_featured_data,
-            split="validation",
-        )
+        # 기존 조건 유지 — --split validation/test/all 학습에서 같은 validation
+        # split로 모델을 선택하는 순환을 막는다
+        validation_data = {
+            symbol: split_by_trading_day(df, split="validation", boundaries=boundaries)
+            for symbol, df in all_data.items()
+        }
     logger.info(
         "Training %s for %d timesteps on %s (%s split, %d-day episodes)",
         config["agent"]["rl_model_name"],
         total_timesteps,
-        symbol,
+        symbols,
         args.split,
         int(config["environment"].get("episode_days", 1)),
     )
@@ -124,16 +145,17 @@ def main() -> None:
             "TensorBoard logs: %s (run name: %s)",
             tensorboard_log_dir or PROJECT_ROOT / "runs" / "tensorboard",
             tensorboard_config.get("log_name")
-            or f"{config['agent']['rl_model_name'].lower()}_{symbol}",
+            or f"{config['agent']['rl_model_name'].lower()}_{'-'.join(symbols)}",
         )
     artifact_path = train_ppo_artifact(
         featured_data=featured_data,
         validation_data=validation_data,
-        symbol=symbol,
         config=config,
         total_timesteps=total_timesteps,
         seed=seed,
-        artifacts_dir=PROJECT_ROOT / args.artifacts_dir,
+        artifacts_dir=resolve_project_path(PROJECT_ROOT, args.artifacts_dir),
+        trained_split=args.split,
+        split_boundaries=boundaries.to_metadata(),
         tensorboard_log_dir=tensorboard_log_dir,
     )
     logger.info("Saved artifact: %s", artifact_path)

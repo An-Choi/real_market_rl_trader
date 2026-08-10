@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -19,9 +20,12 @@ class ServingConfig:
     warmup_days: int = 30
     host: str = "127.0.0.1"
     port: int = 8000
+    provider: str = "historical"
+    kis_token_cache: Path = field(default_factory=lambda: Path("data/.kis_token.json"))
+    kis_rate_limit_sleep: float = 0.5
 
 
-_PATH_FIELDS = ("artifact_dir", "data_dir", "audit_log_dir")
+_PATH_FIELDS = ("artifact_dir", "data_dir", "audit_log_dir", "kis_token_cache")
 # 인증/TLS 없는 스펙 범위 — 로컬 바인딩만 허용 (spec §5)
 _ALLOWED_HOSTS = ("127.0.0.1", "localhost", "::1")
 
@@ -62,6 +66,18 @@ def load_serving_config(path: "str | Path") -> ServingConfig:
         or not 1 <= cfg.port <= 65535
     ):
         raise ValueError(f"port must be an int in 1..65535: {cfg.port!r}")
+    if cfg.provider not in ("historical", "live"):
+        raise ValueError(f"provider must be 'historical' or 'live': {cfg.provider!r}")
+    rate = cfg.kis_rate_limit_sleep
+    if (
+        isinstance(rate, bool)
+        or not isinstance(rate, (int, float))
+        or not math.isfinite(rate)
+        or rate < 0
+    ):
+        raise ValueError(
+            f"kis_rate_limit_sleep must be a finite non-negative number: {rate!r}"
+        )
     if cfg.host not in _ALLOWED_HOSTS:
         raise ValueError(
             f"host must be one of {_ALLOWED_HOSTS} (no auth/TLS in scope): {cfg.host!r}"

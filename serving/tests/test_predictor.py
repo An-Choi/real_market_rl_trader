@@ -1,5 +1,7 @@
 import json
 import shutil
+from datetime import date as _date
+from datetime import timedelta as _timedelta
 
 import numpy as np
 import pytest
@@ -42,4 +44,52 @@ def test_load_happy_path_and_deterministic_predict(tiny_artifact_dir):
 def test_startup_rejections(tiny_artifact_dir, tmp_path, mutate):
     tampered = _tampered_copy(tiny_artifact_dir, tmp_path, mutate)
     with pytest.raises(ArtifactError):
+        Predictor.load(tampered)
+
+
+def _v4_train_data(d: dict) -> dict:
+    """기존 v3 train_data({"symbols", "start", "end"})를 검증 통과하는 v4 형태로 변형.
+
+    agent/tests/test_artifact_v4.py의 _v4_metadata_dict()를 모델로 함 — symbols/
+    trained_split/split_boundaries/per_symbol이 서로 일관되어야 ArtifactMetadata
+    검증을 통과한다.
+    """
+    symbols = d["train_data"]["symbols"]
+    start, end = d["train_data"]["start"], d["train_data"]["end"]
+    validation_end = (_date.fromisoformat(end) + _timedelta(days=1)).isoformat()
+    return {
+        "symbols": symbols,
+        "start": start,
+        "end": end,
+        "trained_split": "all",
+        "split_boundaries": {
+            "train_end_date": end,
+            "validation_end_date": validation_end,
+            "purge_days": 0,
+        },
+        "per_symbol": {
+            sym: {"start": start, "end": end, "trading_days": 12} for sym in symbols
+        },
+    }
+
+
+def test_serving_accepts_v4_artifact_metadata(tiny_artifact_dir, tmp_path):
+    def mutate(d: dict) -> None:
+        d["artifact_format_version"] = 4
+        d["train_data"] = _v4_train_data(d)
+
+    tampered = _tampered_copy(tiny_artifact_dir, tmp_path, mutate)
+    predictor = Predictor.load(tampered)
+    obs = np.zeros(13, dtype=np.float32)
+    mask = np.array([True, True, False])
+    assert predictor.predict(obs, mask) in (0, 1, 2)
+
+
+def test_serving_rejects_v2_artifact_metadata_with_v3_v4_message(tiny_artifact_dir, tmp_path):
+    def mutate(d: dict) -> None:
+        d["artifact_format_version"] = 2
+        d.pop("friction_params", None)
+
+    tampered = _tampered_copy(tiny_artifact_dir, tmp_path, mutate)
+    with pytest.raises(ArtifactError, match="v3/v4"):
         Predictor.load(tampered)

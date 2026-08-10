@@ -3,6 +3,7 @@
 from models.artifact import (
     ArtifactError,
     ArtifactMetadata,
+    check_env_compatibility,
     load_artifact,
     load_metadata,
     make_training_metadata,
@@ -17,6 +18,7 @@ __all__ = [
     "FeatureNormalizer",
     "NormalizedObservationEnv",
     "RLAgent",
+    "check_env_compatibility",
     "load_artifact",
     "load_metadata",
     "make_rl_agent",

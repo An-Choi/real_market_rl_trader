@@ -44,3 +44,4 @@ class PredictResponse(BaseModel):
     artifact_id: str
     feature_schema_version: int
     observation: List[float]
+    bar_close: float

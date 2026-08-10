@@ -21,14 +21,20 @@ from utils.config_loader import load_config
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _write_synthetic_minute_parquet(root: Path, symbol: str) -> None:
-    days = [f"2025-06-{d:02d}" for d in (2, 3, 4, 5, 6, 9, 10, 11)]
+def _write_synthetic_minute_parquet(root: Path, symbol: str, days: int = 60) -> None:
+    """연속 `days` 거래일(주말 제외) 분봉 데이터를 하나의 parquet에 기록한다.
+
+    Task 11에서 config `purge_days: 5`가 적용되면 기존 ~20거래일 fixture는
+    validation/test 구간이 purge로 소멸해 회귀가 깨진다 — 60일 기준(val 9일−purge 5
+    = 4일, test 9일−purge 5 = 4일)으로 여유를 둔다.
+    """
+    trading_days = pd.bdate_range("2025-06-02", periods=days)
     rng = np.random.default_rng(11)
     frames = []
     price = 100.0
 
-    for day in days:
-        ts = pd.date_range(f"{day} 09:00", periods=390, freq="1min", tz="Asia/Seoul")
+    for day in trading_days:
+        ts = pd.date_range(f"{day.date()} 09:00", periods=390, freq="1min", tz="Asia/Seoul")
         closes = price + np.cumsum(rng.normal(0, 0.15, 390))
         price = float(closes[-1])
         frames.append(pd.DataFrame({
@@ -44,7 +50,7 @@ def _write_synthetic_minute_parquet(root: Path, symbol: str) -> None:
     out_dir = root / symbol / "1m"
     out_dir.mkdir(parents=True, exist_ok=True)
     pd.concat(frames, ignore_index=True).to_parquet(
-        out_dir / "2025-06.parquet", engine="pyarrow"
+        out_dir / "synthetic.parquet", engine="pyarrow"
     )
 
 
@@ -59,12 +65,16 @@ def test_backtest_entrypoint_runs_on_synthetic_data(tmp_path: Path) -> None:
             str(PROJECT_ROOT / "experiments" / "backtest.py"),
             "--baseline",
             "random",
+            "--symbol",
+            "005930",
             "--max-steps",
             "5",
             "--raw-dir",
             str(raw_dir),
             "--processed-dir",
             str(processed_dir),
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -99,12 +109,16 @@ def test_backtest_entrypoint_compares_baselines(tmp_path: Path) -> None:
             sys.executable,
             str(PROJECT_ROOT / "experiments" / "backtest.py"),
             "--compare-baselines",
+            "--symbol",
+            "005930",
             "--max-steps",
             "5",
             "--raw-dir",
             str(raw_dir),
             "--processed-dir",
             str(processed_dir),
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -134,6 +148,8 @@ def test_backtest_entrypoint_supports_multi_seed_baseline(tmp_path: Path) -> Non
             str(PROJECT_ROOT / "experiments" / "backtest.py"),
             "--baseline",
             "random",
+            "--symbol",
+            "005930",
             "--seeds",
             "1,2",
             "--max-steps",
@@ -142,6 +158,8 @@ def test_backtest_entrypoint_supports_multi_seed_baseline(tmp_path: Path) -> Non
             str(raw_dir),
             "--processed-dir",
             str(processed_dir),
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
         cwd=PROJECT_ROOT,
         capture_output=True,
@@ -166,8 +184,17 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
     loader = DataLoader(raw_data_dir=raw_dir, processed_data_dir=processed_dir)
     featured_data = build_features(symbol, loader)
     repo_config = load_config(PROJECT_ROOT / "env" / "configs" / "config.yaml")
+
+    # 60거래일을 train/validation/test로 나누고 train 구간만으로 학습한다 —
+    # CLI 백테스트가 기본 --split test로 실행되므로 test 구간에 실제 데이터가 남아야 한다.
+    trading_days = sorted(pd.to_datetime(featured_data["Timestamp"]).dt.date.unique())
+    train_end_date = trading_days[39]
+    validation_end_date = trading_days[49]
+    train_mask = pd.to_datetime(featured_data["Timestamp"]).dt.date <= train_end_date
+    train_data = featured_data.loc[train_mask].reset_index(drop=True)
+
     env = TradingEnvironment(
-        market_data=featured_data,
+        market_data=train_data,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         friction_model=FrictionModel(**repo_config["friction"]),  # CLI 백테스트가 재구성하는 friction과 일치해야 함
         unit_fraction=0.199,  # 레포 config와 일치해야 CLI 백테스트가 artifact를 수용
@@ -186,8 +213,14 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
     agent.train(env, total_timesteps=8)
     metadata = make_training_metadata(
         agent=agent,
-        symbol=symbol,
-        featured_data=featured_data,
+        symbols=[symbol],
+        featured_data_by_symbol={symbol: train_data},
+        trained_split="train",
+        split_boundaries={
+            "train_end_date": str(train_end_date),
+            "validation_end_date": str(validation_end_date),
+            "purge_days": 0,
+        },
         feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         env_params={
@@ -215,6 +248,8 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
             str(raw_dir),
             "--processed-dir",
             str(processed_dir),
+            "--output-dir",
+            str(tmp_path / "out"),
         ],
         cwd=PROJECT_ROOT,
         capture_output=True,

@@ -173,6 +173,7 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
             artifact_id=predictor.meta.artifact_id,
             feature_schema_version=predictor.meta.feature_schema_version,
             observation=[float(x) for x in result.observation],
+            bar_close=result.price,
         )
         _audit(config, {
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -183,6 +184,7 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
             "label": response.label, "action_mask": response.action_mask,
             "observation": response.observation,
             "artifact_id": predictor.meta.artifact_id,
+            "bar_close": result.price,
         })
         return response
 

@@ -3,8 +3,8 @@ numpy
 matplotlib
 pyyaml
 gymnasium
-stable-baselines3
-sb3-contrib
+stable-baselines3==2.7.1
+sb3-contrib==2.7.1
 tensorboard
 requests
 pyarrow
