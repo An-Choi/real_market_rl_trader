@@ -630,3 +630,76 @@ def test_force_month_refetch_empty_is_unavailable(tmp_path: Path) -> None:
 
     assert result == {"2024-01": "unavailable"}
     assert not (tmp_path / "005930" / "1m" / "2024-01.parquet").exists()
+
+
+def test_backfill_minute_monthly_custom_interval_writes_isolated_dir(tmp_path: Path) -> None:
+    """interval="1m-un"은 1m-un/에만 쓰고 기존 1m/은 건드리지 않는다."""
+    from unittest.mock import Mock
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.side_effect = lambda start, end, max_pages_per_day: _minute_df_for(start)
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    saved = collector.backfill_minute_monthly(
+        fetcher=fetcher, symbol="005930", start=date(2025, 5, 22), end=date(2025, 6, 4),
+        interval="1m-un",
+    )
+
+    assert saved == ["2025-05", "2025-06"]
+    assert (tmp_path / "005930" / "1m-un" / "2025-05.parquet").exists()
+    assert (tmp_path / "005930" / "1m-un" / "2025-06.parquet").exists()
+    assert not (tmp_path / "005930" / "1m").exists()
+
+
+def test_backfill_minute_monthly_custom_interval_skip_checks_same_dir(tmp_path: Path) -> None:
+    """스킵(완전 파티션) 판정도 interval 디렉터리를 본다."""
+    from unittest.mock import Mock
+
+    d = tmp_path / "005930" / "1m-un"
+    d.mkdir(parents=True)
+    _minute_df_days(2025, 6, [2, 9, 16, 23, 30]).to_parquet(d / "2025-06.parquet", index=False)
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.side_effect = lambda start, end, max_pages_per_day: _minute_df_for(start)
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    saved = collector.backfill_minute_monthly(
+        fetcher=fetcher, symbol="005930", start=date(2025, 5, 22), end=date(2025, 7, 4),
+        interval="1m-un",
+    )
+
+    assert saved == ["2025-05", "2025-07"]                 # 완전한 6월은 스킵
+    called_starts = [c.kwargs["start"] for c in fetcher.fetch_minute_range.call_args_list]
+    assert date(2025, 6, 1) not in called_starts
+
+
+def test_force_month_refetch_custom_interval(tmp_path: Path) -> None:
+    from unittest.mock import Mock
+
+    fetcher = Mock()
+    fetcher.fetch_minute_range.return_value = _minute_df_days(2025, 7, [1, 2, 3])
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    result = collector.force_month_refetch(
+        fetcher, symbol="005930", months=["2025-07"], today=date(2026, 7, 6),
+        interval="1m-un",
+    )
+
+    assert result == {"2025-07": "replaced"}
+    assert (tmp_path / "005930" / "1m-un" / "2025-07.parquet").exists()
+    assert not (tmp_path / "005930" / "1m").exists()
+
+
+def test_audit_minute_coverage_custom_interval(tmp_path: Path) -> None:
+    d = tmp_path / "005930" / "1m-un"
+    d.mkdir(parents=True)
+    _minute_df_days(2026, 4, list(range(1, 31))).to_parquet(d / "2026-04.parquet", index=False)
+    _minute_df_days(2026, 6, [1, 2]).to_parquet(d / "2026-06.parquet", index=False)  # 5월 없음
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    warnings = collector.audit_minute_coverage(
+        symbol="005930", today=date(2026, 7, 21), interval="1m-un")
+
+    assert any("2026-05" in w for w in warnings)
+    assert any("2026-06" in w for w in warnings)
+    assert collector.audit_minute_coverage(symbol="005930", today=date(2026, 7, 21)) == []  # 기본 1m/은 비어 있어 무경고

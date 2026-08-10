@@ -178,6 +178,7 @@ class DataCollector:
         overwrite: bool = False,
         max_pages_per_day: int = 4,
         overwrite_partitions: set[str] | None = None,
+        interval: str = "1m",
     ) -> list[str]:
         """Fetch minute data month-by-month, saving each month immediately.
 
@@ -191,7 +192,7 @@ class DataCollector:
         saved: list[str] = []
         for w_start, w_end in _month_windows(start, end):
             partition = f"{w_start.year:04d}-{w_start.month:02d}"
-            path = self.raw_data_dir / symbol / "1m" / f"{partition}.parquet"
+            path = self.raw_data_dir / symbol / interval / f"{partition}.parquet"
             if path.exists() and not overwrite and partition not in forced:
                 existing_days = (
                     pd.read_parquet(path, columns=["Timestamp"])["Timestamp"]
@@ -208,7 +209,7 @@ class DataCollector:
                 continue
             if overwrite:
                 # 기존 --overwrite 전체 재수집 경로: 무조건 저장 (기존 동작 불변)
-                self.save_raw_parquet(df, symbol=symbol, interval="1m", partition=partition)
+                self.save_raw_parquet(df, symbol=symbol, interval=interval, partition=partition)
                 written: Path | None = path
             else:
                 if path.exists():
@@ -220,7 +221,7 @@ class DataCollector:
                             symbol, partition, [str(day) for day in preserved],
                         )
                 written = self.save_if_changed(
-                    df, symbol=symbol, interval="1m", partition=partition, time_col="Timestamp"
+                    df, symbol=symbol, interval=interval, partition=partition, time_col="Timestamp"
                 )
             if written is not None:
                 saved.append(partition)
@@ -234,6 +235,7 @@ class DataCollector:
         months: list[str],
         max_pages_per_day: int = 4,
         today: date | None = None,
+        interval: str = "1m",
     ) -> dict[str, str]:
         """Explicit full-month recovery windows, independent of the rolling range.
 
@@ -257,7 +259,7 @@ class DataCollector:
                 logging.warning("[%s] force month %s: no data (rolling limit?)", symbol, label)
                 results[label] = "unavailable"
                 continue
-            path = self.raw_data_dir / symbol / "1m" / f"{label}.parquet"
+            path = self.raw_data_dir / symbol / interval / f"{label}.parquet"
             preserved: list[date] = []
             if path.exists():
                 existing = pd.read_parquet(path)
@@ -268,7 +270,7 @@ class DataCollector:
                         symbol, label, [str(day) for day in preserved],
                     )
             written = self.save_if_changed(
-                df, symbol=symbol, interval="1m", partition=label, time_col="Timestamp"
+                df, symbol=symbol, interval=interval, partition=label, time_col="Timestamp"
             )
             if written is not None:
                 results[label] = "replaced"
@@ -276,7 +278,7 @@ class DataCollector:
                 results[label] = "kept_existing" if preserved else "unchanged"
         return results
 
-    def audit_minute_coverage(self, symbol: str, today: date | None = None) -> list[str]:
+    def audit_minute_coverage(self, symbol: str, today: date | None = None, interval: str = "1m") -> list[str]:
         """Scan saved 1m partitions for coverage holes.
 
         부분 수집으로 멈춘 월, 월 중간의 큰 갭, 아예 빠진 월 파일을 경고
@@ -284,7 +286,7 @@ class DataCollector:
         구멍이 조용히 고착되기 전에 드러내는 용도.
         """
         today = today or date.today()
-        directory = self.raw_data_dir / symbol / "1m"
+        directory = self.raw_data_dir / symbol / interval
         labels = sorted(path.stem for path in directory.glob("*.parquet"))
         warnings: list[str] = []
         for index, label in enumerate(labels):
