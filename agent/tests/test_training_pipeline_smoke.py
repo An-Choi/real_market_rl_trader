@@ -72,20 +72,32 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
             },
         },
     }
+    max_timestamp = featured_data["Timestamp"].max()
+    boundaries = {
+        "train_end_date": str(max_timestamp.date()),
+        "validation_end_date": str((max_timestamp + pd.Timedelta(days=1)).date()),
+        "purge_days": 0,
+    }
     artifact_dir = train_ppo_artifact(
-        featured_data=featured_data,
-        symbol=symbol,
+        featured_data={symbol: featured_data},
         config=config,
         total_timesteps=8,
         seed=0,
         artifacts_dir=tmp_path / "artifacts",
+        trained_split="train",
+        split_boundaries=boundaries,
         model_kwargs={"n_steps": 8, "batch_size": 4, "verbose": 0},
     )
 
     from models.artifact import load_metadata
 
     meta = load_metadata(artifact_dir)
-    assert meta.artifact_format_version == 2
+    assert meta.artifact_format_version == 4
+    assert set(meta.friction_params) == {
+        "fee_rate", "spread_rate", "slippage_rate", "execution_uncertainty_rate",
+        "sell_tax_rate", "dynamic_spread", "date_based_sell_tax",
+    }
+    assert meta.friction_params["fee_rate"] == config["friction"]["fee_rate"]
     assert meta.env_params["episode_days"] >= 1
     assert meta.env_params["duration_horizon_bars"] == (
         meta.env_params["episode_days"] * 64

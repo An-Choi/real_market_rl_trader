@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import gymnasium as gym
 import numpy as np
@@ -13,7 +14,8 @@ import pytest
 from gymnasium import spaces
 
 from data.feature_engineer import FeatureEngineer
-from models.artifact import ArtifactError, ArtifactMetadata, current_git_sha, load_artifact, load_metadata, make_artifact_id, save_artifact
+from friction.friction_model import FrictionModel
+from models.artifact import ArtifactError, ArtifactMetadata, _check_env_compatibility, current_git_sha, load_artifact, load_metadata, make_artifact_id, save_artifact
 from models.rl_agent import RLAgent
 
 OBS_DIM = 13
@@ -613,3 +615,92 @@ def test_load_artifact_rejects_reversed_action_labels_without_env(
 
     with pytest.raises(ArtifactError, match="labels"):
         load_artifact(artifact_dir)
+
+
+VALID_FRICTION = {
+    "fee_rate": 0.00018, "spread_rate": 0.001, "slippage_rate": 0.0,
+    "execution_uncertainty_rate": 0.0, "sell_tax_rate": 0.002,
+    "dynamic_spread": True, "date_based_sell_tax": True,
+}
+
+
+def _as_v3(valid_metadata_dict: dict) -> dict:
+    """valid_metadata_dict fixture는 format **v1**(env_params 3키)이다.
+
+    v3로 확장하려면 version·friction_params에 더해 v2+ 필수 env_params
+    (episode_days 등)도 채워야 한다 — 아니면 friction 검증 전에
+    'env_params missing keys'로 먼저 실패한다.
+    """
+    data = dict(valid_metadata_dict)
+    data["artifact_format_version"] = 3
+    data["env_params"] = _v2_env_params()  # 파일 내 기존 헬퍼(377행 근처) 재사용
+    data["friction_params"] = dict(VALID_FRICTION)
+    return data
+
+
+def test_v3_roundtrip_with_friction_params(valid_metadata_dict):
+    meta = ArtifactMetadata.from_dict(_as_v3(valid_metadata_dict))
+    assert meta.artifact_format_version == 3
+    assert meta.friction_params == VALID_FRICTION
+
+
+def test_v3_missing_friction_params_rejected(valid_metadata_dict):
+    data = _as_v3(valid_metadata_dict)
+    del data["friction_params"]
+    with pytest.raises(ArtifactError, match="friction_params"):
+        ArtifactMetadata.from_dict(data)
+
+
+def test_v3_unknown_friction_field_rejected(valid_metadata_dict):
+    data = _as_v3(valid_metadata_dict)
+    data["friction_params"]["mystery_rate"] = 0.1
+    with pytest.raises(ArtifactError, match="friction_params"):
+        ArtifactMetadata.from_dict(data)
+
+
+def test_v3_missing_friction_field_rejected(valid_metadata_dict):
+    data = _as_v3(valid_metadata_dict)
+    del data["friction_params"]["sell_tax_rate"]
+    with pytest.raises(ArtifactError, match="friction_params"):
+        ArtifactMetadata.from_dict(data)
+
+
+@pytest.mark.parametrize("bad", [-0.001, float("nan"), float("inf"), True, "0.1"])
+def test_v3_invalid_rate_rejected(valid_metadata_dict, bad):
+    data = _as_v3(valid_metadata_dict)
+    data["friction_params"]["fee_rate"] = bad
+    with pytest.raises(ArtifactError, match="friction_params"):
+        ArtifactMetadata.from_dict(data)
+
+
+@pytest.mark.parametrize("bad", [1, "true", None])
+def test_v3_invalid_flag_rejected(valid_metadata_dict, bad):
+    data = _as_v3(valid_metadata_dict)
+    data["friction_params"]["dynamic_spread"] = bad
+    with pytest.raises(ArtifactError, match="friction_params"):
+        ArtifactMetadata.from_dict(data)
+
+
+def test_v2_with_friction_params_rejected(valid_metadata_dict):
+    data = dict(valid_metadata_dict)  # format 2
+    data["friction_params"] = dict(VALID_FRICTION)
+    with pytest.raises(ArtifactError, match="friction_params"):
+        ArtifactMetadata.from_dict(data)
+
+
+def test_env_compatibility_rejects_friction_mismatch(valid_metadata_dict):
+    # backtest/평가 경로: load_artifact(env=...)가 다른 friction의 env에
+    # v3 artifact를 조용히 연결하는 것을 막는다.
+    meta = ArtifactMetadata.from_dict(_as_v3(valid_metadata_dict))
+    env = SimpleNamespace(
+        feature_schema_version=meta.feature_schema_version,
+        feature_columns=list(meta.feature_columns),
+        observation_space=None,
+        action_space=None,
+        friction_model=FrictionModel(),  # 기본값 — artifact snapshot과 다름
+        **{k: meta.env_params[k] for k in (
+            "duration_horizon_bars", "unit_fraction", "max_units",
+            "initial_cash", "nominal_bars_per_day")},
+    )
+    with pytest.raises(ArtifactError, match="friction"):
+        _check_env_compatibility(meta, env)

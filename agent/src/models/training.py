@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
+
+import pandas as pd
+from stable_baselines3.common.vec_env import DummyVecEnv
 
 from data.feature_engineer import FeatureEngineer
 from env.trading_env import TradingEnvironment
@@ -62,54 +66,83 @@ def build_training_environment(
     )
 
 
+def build_vec_training_environment(
+    featured_data_by_symbol: dict[str, Any],
+    *,
+    environment_config: dict[str, Any],
+    friction_config: dict[str, Any],
+    normalizer: FeatureNormalizer | None,
+) -> DummyVecEnv:
+    """종목당 TradingEnvironment 1개를 DummyVecEnv로 묶는다 (종목 순서 = dict 순서)."""
+
+    def _factory(df=None):
+        # 디폴트 인자 바인딩으로 late-binding 클로저 버그 방지
+        def _make():
+            raw = build_training_environment(
+                featured_data=df,
+                environment_config=environment_config,
+                friction_config=friction_config,
+            )
+            if normalizer is not None:
+                return NormalizedObservationEnv(raw, normalizer)
+            return raw
+        return _make
+
+    return DummyVecEnv([
+        _factory(df=df) for df in featured_data_by_symbol.values()
+    ])
+
+
 def train_ppo_artifact(
     *,
-    featured_data: Any,
-    validation_data: Any | None = None,
-    symbol: str,
+    featured_data: dict[str, Any],
+    validation_data: dict[str, Any] | None = None,
     config: dict[str, Any],
     total_timesteps: int,
     seed: int,
     artifacts_dir: str | Path,
+    trained_split: str,
+    split_boundaries: dict[str, Any],
     model_kwargs: dict[str, Any] | None = None,
     tensorboard_log_dir: str | Path | None = None,
 ) -> Path:
     """Train the configured PPO-family agent and save a versioned artifact."""
+    symbols = list(featured_data.keys())
     feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
-    raw_environment = build_training_environment(
-        featured_data=featured_data,
-        environment_config=config["environment"],
-        friction_config=config["friction"],
-    )
+
     normalization_config = config["agent"].get("normalization", {})
     normalization_enabled = normalization_config.get("enabled", True)
     normalizer = None
-    environment: Any = raw_environment
     if normalization_enabled:
         normalizer = FeatureNormalizer.fit(
-            featured_data,
+            pd.concat(featured_data.values(), ignore_index=True),
             feature_columns,
             clip=float(normalization_config.get("clip", 5.0)),
         )
-        environment = NormalizedObservationEnv(raw_environment, normalizer)
+
+    environment = build_vec_training_environment(
+        featured_data,
+        environment_config=config["environment"],
+        friction_config=config["friction"],
+        normalizer=normalizer,
+    )
 
     validation_callback = None
     validation_config = config["agent"].get("validation", {})
     validation_enabled = bool(validation_config.get("enabled", True))
     if validation_enabled and validation_data is not None:
-        raw_validation_environment = build_training_environment(
-            featured_data=validation_data,
-            environment_config=config["environment"],
-            friction_config=config["friction"],
-        )
-        validation_environment: Any = raw_validation_environment
-        if normalizer is not None:
-            validation_environment = NormalizedObservationEnv(
-                raw_validation_environment,
-                normalizer,
+        evaluation_envs: dict[str, Any] = {}
+        for symbol, val_df in validation_data.items():
+            raw_val = build_training_environment(
+                featured_data=val_df,
+                environment_config=config["environment"],
+                friction_config=config["friction"],
+            )
+            evaluation_envs[symbol] = (
+                NormalizedObservationEnv(raw_val, normalizer) if normalizer is not None else raw_val
             )
         validation_callback = FullSplitValidationCallback(
-            validation_environment,
+            evaluation_envs,
             eval_freq=int(validation_config.get("eval_freq", 25_000)),
             use_action_masks=config["agent"]["rl_model_name"] == "MaskablePPO",
             seed=int(validation_config.get("seed", seed)),
@@ -124,10 +157,12 @@ def train_ppo_artifact(
         or tensorboard_config.get("log_dir")
         or "runs/tensorboard"
     )
-    tb_log_name = str(
-        tensorboard_config.get("log_name")
-        or f"{config['agent']['rl_model_name'].lower()}_{symbol}"
+    default_log_name = (
+        f"{config['agent']['rl_model_name'].lower()}_{symbols[0]}"
+        if len(symbols) == 1
+        else f"{config['agent']['rl_model_name'].lower()}_multi{len(symbols)}"
     )
+    tb_log_name = str(tensorboard_config.get("log_name") or default_log_name)
 
     ppo_kwargs = dict(DEFAULT_PPO_KWARGS)
     ppo_kwargs.update(config["agent"].get("ppo", {}))
@@ -167,20 +202,28 @@ def train_ppo_artifact(
         callback=training_callback,
     )
 
+    episode_days = int(config["environment"].get("episode_days", 1))
+    nominal_bars = int(config["environment"].get("nominal_bars_per_day", 64))
+    env_params = {
+        "unit_fraction": config["environment"]["unit_fraction"],
+        "max_units": config["environment"]["max_units"],
+        "initial_cash": config["environment"]["initial_cash"],
+        "episode_days": episode_days,
+        "duration_horizon_bars": episode_days * nominal_bars,
+        "nominal_bars_per_day": nominal_bars,
+    }
+    friction_params = dataclasses.asdict(FrictionModel(**config["friction"]))
+
     metadata = make_training_metadata(
         agent=agent,
-        symbol=symbol,
-        featured_data=featured_data,
+        symbols=symbols,
+        featured_data_by_symbol=featured_data,
+        trained_split=trained_split,
+        split_boundaries=split_boundaries,
         feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
         feature_columns=feature_columns,
-        env_params={
-            "unit_fraction": config["environment"]["unit_fraction"],
-            "max_units": config["environment"]["max_units"],
-            "initial_cash": config["environment"]["initial_cash"],
-            "episode_days": raw_environment.episode_days,
-            "duration_horizon_bars": raw_environment.duration_horizon_bars,
-            "nominal_bars_per_day": raw_environment.nominal_bars_per_day,
-        },
+        env_params=env_params,
+        friction_params=friction_params,
         normalization=(
             {"type": "feature_standardization", "file": "feature_normalization.json"}
             if normalizer is not None

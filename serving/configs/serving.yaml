@@ -1,0 +1,11 @@
+artifact_dir: artifacts/CHANGE_ME     # ppo-fs3-... artifact 디렉토리
+data_dir: data/raw
+symbols: ["005930"]
+audit_log_dir: serving/logs
+max_bar_age_minutes: 10
+warmup_days: 30
+host: 127.0.0.1
+port: 8000
+provider: historical          # historical | live (live = 당일 KIS 조회 병합)
+kis_token_cache: data/.kis_token.json
+kis_rate_limit_sleep: 0.5
