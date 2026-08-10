@@ -261,10 +261,12 @@ class ArtifactMetadata:
             raise ArtifactError(f"invalid train_data.split_boundaries: {exc}") from exc
 
         per_symbol = td.get("per_symbol")
-        if not isinstance(per_symbol, dict) or set(per_symbol) != set(symbols):
+        if not isinstance(per_symbol, dict):
+            raise ArtifactError(f"train_data.per_symbol must be a dict: {per_symbol!r}")
+        if set(per_symbol) != set(symbols):
             raise ArtifactError(
                 f"train_data.per_symbol keys must equal symbols: "
-                f"{sorted(per_symbol or {})} != {sorted(symbols)}"
+                f"{sorted(per_symbol)} != {sorted(symbols)}"
             )
         starts, ends = [], []
         for symbol, entry in per_symbol.items():

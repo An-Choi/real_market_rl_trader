@@ -92,6 +92,13 @@ def test_v4_rejects_negative_purge():
         ArtifactMetadata.from_dict(payload)
 
 
+def test_v4_rejects_non_dict_per_symbol_with_artifact_error():
+    payload = _v4_metadata_dict()
+    payload["train_data"]["per_symbol"] = 42  # non-iterable — TypeError가 아니라 ArtifactError여야 함
+    with pytest.raises(ArtifactError):
+        ArtifactMetadata.from_dict(payload)
+
+
 def test_v4_rejects_duplicate_symbols():
     payload = _v4_metadata_dict()
     payload["train_data"]["symbols"] = ["AAA", "AAA"]
