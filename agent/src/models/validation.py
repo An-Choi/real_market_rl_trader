@@ -10,6 +10,13 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 
+DEFAULT_ROBUST_SELECTION_WEIGHTS = {
+    "median_return": 1.0,
+    "worst_return": 0.5,
+    "max_drawdown": 0.5,
+}
+
+
 @dataclass(frozen=True)
 class ValidationSnapshot:
     """Metrics from one deterministic pass over the validation split."""
@@ -25,8 +32,64 @@ class ValidationSnapshot:
     clear_action_rate: float
 
 
+def summarize_validation_snapshots(
+    snapshots: dict[str, ValidationSnapshot],
+    *,
+    selection: dict[str, Any] | None = None,
+) -> dict[str, float]:
+    """Aggregate validation windows and calculate the checkpoint score.
+
+    ``mean_total_return`` preserves the legacy selector. ``robust_return`` uses
+    the median window return and penalizes only a negative worst window plus
+    average drawdown. This prevents one unusually strong symbol/window from
+    dominating checkpoint selection.
+    """
+    if not snapshots:
+        raise ValueError("validation snapshots must not be empty")
+    config = dict(selection or {})
+    metric = str(config.get("metric", "mean_total_return"))
+    returns = np.asarray(
+        [snapshot.total_return for snapshot in snapshots.values()], dtype=np.float64
+    )
+    drawdowns = np.asarray(
+        [snapshot.max_drawdown for snapshot in snapshots.values()], dtype=np.float64
+    )
+    hold_rates = np.asarray(
+        [snapshot.hold_action_rate for snapshot in snapshots.values()], dtype=np.float64
+    )
+    stats = {
+        "mean_total_return": float(np.mean(returns)),
+        "median_total_return": float(np.median(returns)),
+        "worst_total_return": float(np.min(returns)),
+        "mean_max_drawdown": float(np.mean(drawdowns)),
+        "mean_hold_action_rate": float(np.mean(hold_rates)),
+    }
+    if metric == "mean_total_return":
+        score = stats["mean_total_return"]
+    elif metric == "robust_return":
+        weights = dict(DEFAULT_ROBUST_SELECTION_WEIGHTS)
+        configured_weights = config.get("weights", {})
+        unknown_weights = set(configured_weights).difference(weights)
+        if unknown_weights:
+            raise ValueError(
+                f"unknown validation selection weights: {sorted(unknown_weights)}"
+            )
+        weights.update(configured_weights)
+        for key, value in weights.items():
+            if not isinstance(value, (int, float)) or not np.isfinite(value) or value < 0:
+                raise ValueError(f"validation selection weight {key} must be finite and >= 0")
+        score = (
+            weights["median_return"] * stats["median_total_return"]
+            + weights["worst_return"] * min(stats["worst_total_return"], 0.0)
+            + weights["max_drawdown"] * stats["mean_max_drawdown"]
+        )
+    else:
+        raise ValueError(f"unsupported validation selection metric: {metric}")
+    return {"selection_score": float(score), **stats}
+
+
 class FullSplitValidationCallback(BaseCallback):
-    """Keep the parameters with the best full-validation terminal return."""
+    """Keep parameters with the best configured multi-window validation score."""
 
     def __init__(
         self,
@@ -37,6 +100,7 @@ class FullSplitValidationCallback(BaseCallback):
         seed: int = 0,
         deterministic: bool = True,
         verbose: int = 0,
+        selection: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(verbose=verbose)
         if eval_freq <= 0:
@@ -48,6 +112,12 @@ class FullSplitValidationCallback(BaseCallback):
         self.use_action_masks = bool(use_action_masks)
         self.seed = int(seed)
         self.deterministic = bool(deterministic)
+        self.selection = dict(selection or {})
+        # Validate the metric eagerly instead of failing after a long rollout.
+        summarize_validation_snapshots(
+            {"validation": ValidationSnapshot(0, 0, 0, 0, 0, 0, 1, 0, 0)},
+            selection=self.selection,
+        )
         self.best_score = float("-inf")
         self.best_timestep: int | None = None
         self.best_snapshot: dict[str, ValidationSnapshot] | None = None
@@ -75,23 +145,25 @@ class FullSplitValidationCallback(BaseCallback):
 
     def _evaluate_and_maybe_update(self) -> None:
         snapshots = self._run_all_splits()
-        mean_return = float(
-            np.mean([snap.total_return for snap in snapshots.values()])
-        )
+        metrics = summarize_validation_snapshots(snapshots, selection=self.selection)
+        score = metrics["selection_score"]
         self.latest_snapshot = snapshots
         self.evaluation_count += 1
         self._last_evaluation_timestep = self.num_timesteps
 
-        if mean_return > self.best_score:
-            self.best_score = mean_return
+        if score > self.best_score:
+            self.best_score = score
             self.best_timestep = int(self.num_timesteps)
             self.best_snapshot = snapshots
             self._best_parameters = copy.deepcopy(self.model.get_parameters())
             if self.verbose:
                 print(
-                    f"Validation best updated at {self.num_timesteps} steps: {mean_return:.4%}"
+                    f"Validation best updated at {self.num_timesteps} steps: "
+                    f"score={score:.4f}, median={metrics['median_total_return']:.2%}, "
+                    f"worst={metrics['worst_total_return']:.2%}, "
+                    f"mean_mdd={metrics['mean_max_drawdown']:.2%}"
                 )
-        self._record(snapshots, mean_return)
+        self._record(metrics)
 
     def _run_all_splits(self) -> dict[str, ValidationSnapshot]:
         return {
@@ -156,13 +228,19 @@ class FullSplitValidationCallback(BaseCallback):
     def _record_value(self, key: str, value: float) -> None:
         self.logger.record(key, float(value))
 
-    def _record(
-        self, snapshots: dict[str, ValidationSnapshot], mean_return: float
-    ) -> None:
-        for symbol, snap in snapshots.items():
-            self._record_value(f"validation/return_{symbol}", snap.total_return)
-        self._record_value("validation/mean_total_return", mean_return)
-        self._record_value("validation/best_mean_total_return", self.best_score)
+    def _record(self, metrics: dict[str, float]) -> None:
+        # Keep TensorBoard focused on checkpoint decisions. Per-window detail is
+        # preserved in artifact metadata and the walk-forward JSON report.
+        for key in (
+            "selection_score",
+            "mean_total_return",
+            "median_total_return",
+            "worst_total_return",
+            "mean_max_drawdown",
+            "mean_hold_action_rate",
+        ):
+            self._record_value(f"validation/{key}", metrics[key])
+        self._record_value("validation/best_selection_score", self.best_score)
 
     def summary(self) -> dict[str, Any]:
         """Return JSON-serializable model-selection metadata."""
@@ -173,14 +251,13 @@ class FullSplitValidationCallback(BaseCallback):
             if snapshots is None:
                 return None
             return {
-                "mean_total_return": float(
-                    np.mean([s.total_return for s in snapshots.values()])
-                ),
+                **summarize_validation_snapshots(snapshots, selection=self.selection),
                 "per_symbol": {sym: asdict(s) for sym, s in snapshots.items()},
             }
 
         return {
-            "metric": "mean_total_return",
+            "metric": str(self.selection.get("metric", "mean_total_return")),
+            "selection": self.selection,
             "eval_freq": self.eval_freq,
             "evaluation_count": self.evaluation_count,
             "best_timestep": self.best_timestep,

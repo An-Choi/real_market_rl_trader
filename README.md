@@ -51,6 +51,7 @@ pip install -r requirements.txt
 
 python3 experiments/train.py                    # PPO 학습
 python3 experiments/backtest.py                 # baseline/agent 백테스트
+python3 experiments/walk_forward_train.py --plan-only  # 다중 시계열 fold 확인
 python3 scripts/backfill.py --symbols 005930    # KIS 분봉 백필
 python3 -m pytest env/tests/ -v                 # 테스트
 ```
@@ -67,4 +68,43 @@ KIS API 키는 `.env`에 둡니다(`.env.example` 참고). `train.py`는 real �
 - 학습 중 validation 전체 구간 평가와 최고 checkpoint artifact 저장
 - baseline agent (buy-and-hold, MA crossover, random 등)
 - split 전체 날짜 agent ↔ env 백테스트, 평가 metric (return / Sharpe / max drawdown / turnover 등)
+- expanding walk-forward 다중 학습/검증/test와 bull·bear·sideways 사후 구간 표시
+- 중앙 validation 수익률 + 최악 window + 평균 낙폭 기반 robust checkpoint 선택
+- feature 품질·미래수익 상관·정책 permutation sensitivity 리포트
 - 거래소 API 없이 동작 구조만 잡은 paper trading engine
+
+## 다중 시장 구간 평가
+
+최근 test 한 구간에 의존하지 않고, 시간 순서를 지킨 독립 fold들을 먼저 확인합니다.
+
+```bash
+python experiments/walk_forward_train.py --plan-only \
+  --folds 3 --validation-days 20 --test-days 20
+
+# fold마다 별도 학습 → validation checkpoint 선택 → 다음 test window 평가
+python experiments/walk_forward_train.py \
+  --folds 3 --validation-days 20 --test-days 20 --total-timesteps 300000
+```
+
+각 test window의 시장 수익률과 bull/bear/sideways 라벨은 결과 설명용이며, fold를
+선택하거나 모델을 학습하는 입력으로 사용하지 않습니다.
+
+## Feature 진단
+
+```bash
+python experiments/feature_report.py \
+  --artifact artifacts/<artifact-id> --split validation
+```
+
+리포트는 결측·비정상값·정규화 clip 비율, 미래 1/3/12 bar 수익률과의 순위상관,
+feature 간 중복도, feature permutation에 따른 정책 행동확률 변화와 action flip 비율을
+한 파일에 기록합니다.
+
+TensorBoard 사용자 정의 로그는 다음 핵심 그룹만 기록합니다.
+
+- `performance/`: 전략·시장·초과수익
+- `validation/`: 선택점수·중앙·최악수익·평균 낙폭
+- `risk/`: 평균 노출
+- `policy/`: Hold/Add/Clear 비율
+- `trading/`: 비용과 강제청산
+- `reward/`: 실제 활성화된 보상 항

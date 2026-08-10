@@ -7,6 +7,7 @@ from models import RLAgent, make_rl_agent
 from policies import (
     SUPPORTED_BASELINES,
     BuyAndHoldAgent,
+    CashAgent,
     MovingAverageCrossoverAgent,
     RandomAgent,
     make_baseline_agent,
@@ -14,7 +15,8 @@ from policies import (
 
 
 def test_make_baseline_agent_by_name() -> None:
-    assert SUPPORTED_BASELINES == ("buy_and_hold", "random", "ma_crossover")
+    assert SUPPORTED_BASELINES == ("cash", "buy_and_hold", "random", "ma_crossover")
+    assert isinstance(make_baseline_agent("cash"), CashAgent)
     assert isinstance(make_baseline_agent("buy_and_hold"), BuyAndHoldAgent)
     assert isinstance(make_baseline_agent("random", seed=1), RandomAgent)
     assert isinstance(make_baseline_agent("ma_crossover"), MovingAverageCrossoverAgent)

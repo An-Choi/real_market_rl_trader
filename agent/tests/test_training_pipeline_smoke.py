@@ -129,16 +129,10 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
     event_data.Reload()
     scalar_tags = set(event_data.Tags()["scalars"])
     assert {
-        "returns/cumulative_return",
-        "returns/benchmark_cumulative_return",
-        "portfolio/value_mean",
-        "actions/hold_rate",
-        "cost/friction_sum",
+        "policy/hold_rate",
+        "trading/friction_total",
         "trading/forced_clear_count",
         "reward/base_return_mean",
-        "daily/portfolio_return",
-        "daily/benchmark_return",
-        "daily/friction_sum",
-        "daily/hold_rate",
-        "daily/reward_base_return_mean",
     }.issubset(scalar_tags)
+    assert not any(tag.startswith("daily/") for tag in scalar_tags)
+    assert "performance/cumulative_return" not in scalar_tags

@@ -13,9 +13,19 @@ venv/
 
 # Testing & coverage
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
 .coverage
+.coverage.*
+coverage.xml
+junit.xml
 htmlcov/
 .tox/
+
+# Notebook and tool caches
+.ipynb_checkpoints/
+.cache/
 
 # IDE / editor
 .idea/
@@ -31,8 +41,16 @@ logs/
 runs/
 wandb/
 artifacts/
+tensorboard/
+events.out.tfevents.*
 
-# KIS credentials and data
+# Local environment and credentials
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# KIS market data is managed by the sibling rl_trader_data repository.
 # data/ is a nested clone of An-Choi/rl-trader-data (own git repo)
 data/

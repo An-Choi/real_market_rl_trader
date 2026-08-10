@@ -9,7 +9,14 @@ import numpy as np
 import pandas as pd
 
 
-SUPPORTED_BASELINES = ("buy_and_hold", "random", "ma_crossover")
+SUPPORTED_BASELINES = ("cash", "buy_and_hold", "random", "ma_crossover")
+
+
+class CashAgent:
+    """Risk-free zero-exposure baseline for absolute-return comparisons."""
+
+    def predict(self, observation: Any, market_row: pd.Series | None = None) -> tuple[int, dict]:
+        return 0, {}
 
 
 class BuyAndHoldAgent:
@@ -109,6 +116,8 @@ def make_baseline_agent(
     max_units: int = 5,
 ) -> Any:
     """Create a supported rule-based baseline policy by experiment name."""
+    if name == "cash":
+        return CashAgent()
     if name == "buy_and_hold":
         return BuyAndHoldAgent(target_units=max_units)
     if name == "random":

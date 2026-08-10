@@ -7,9 +7,12 @@ import pandas as pd
 import pytest
 
 from models.walk_forward import (
+    build_expanding_walk_forward_folds,
     SplitBoundaries,
     compute_split_boundaries,
+    slice_walk_forward_fold,
     split_by_trading_day,
+    split_into_day_windows,
 )
 
 
@@ -114,3 +117,41 @@ def test_ratio_path_unchanged_without_boundaries():
     df = _frame("2026-01-01", 10)
     legacy = split_by_trading_day(df, split="train")
     assert pd.to_datetime(legacy["Timestamp"]).dt.date.nunique() == 7  # int(10*0.7)
+
+
+def test_day_windows_are_chronological_and_merge_short_tail():
+    windows = split_into_day_windows(
+        _frame("2026-01-01", 12), window_days=5, min_window_days=3
+    )
+    assert list(windows) == [
+        "2026-01-01..2026-01-05",
+        "2026-01-06..2026-01-12",
+    ]
+    assert [
+        pd.to_datetime(frame["Timestamp"]).dt.date.nunique()
+        for frame in windows.values()
+    ] == [5, 7]
+
+
+def test_day_windows_reject_invalid_sizes():
+    frame = _frame("2026-01-01", 5)
+    with pytest.raises(ValueError):
+        split_into_day_windows(frame, window_days=0)
+    with pytest.raises(ValueError):
+        split_into_day_windows(frame, window_days=5, min_window_days=6)
+
+
+def test_expanding_folds_have_forward_non_overlapping_tests():
+    data = {"AAA": _frame("2026-01-01", 100)}
+    folds = build_expanding_walk_forward_folds(
+        data, n_folds=3, validation_days=10, test_days=10, purge_days=2
+    )
+    assert len(folds) == 3
+    assert folds[0].train_end < folds[0].validation_start < folds[0].test_start
+    assert folds[0].test_end < folds[1].test_start
+    assert folds[-1].test_end == datetime.date(2026, 4, 10)
+    assert [
+        pd.to_datetime(slice_walk_forward_fold(data["AAA"], fold, segment="test")["Timestamp"])
+        .dt.date.nunique()
+        for fold in folds
+    ] == [10, 10, 10]

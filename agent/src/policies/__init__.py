@@ -3,6 +3,7 @@
 from policies.baseline_agents import (
     SUPPORTED_BASELINES,
     BuyAndHoldAgent,
+    CashAgent,
     MovingAverageCrossoverAgent,
     RandomAgent,
     RuleBasedRegimeAgent,
@@ -25,6 +26,7 @@ __all__ = [
     "SUPPORTED_BASELINES",
     "BacktestEngine",
     "BuyAndHoldAgent",
+    "CashAgent",
     "MovingAverageCrossoverAgent",
     "RandomAgent",
     "RuleBasedRegimeAgent",

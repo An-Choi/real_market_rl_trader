@@ -16,8 +16,12 @@ from friction.friction_model import FrictionModel
 from models.artifact import make_training_metadata, save_artifact
 from models.normalization import FeatureNormalizer, NormalizedObservationEnv
 from models.rl_agent import make_rl_agent
-from models.tensorboard_callback import TradingMetricsTensorBoardCallback
+from models.tensorboard_callback import (
+    TradingMetricsTensorBoardCallback,
+    active_reward_info_keys,
+)
 from models.validation import FullSplitValidationCallback
+from models.walk_forward import split_into_day_windows
 
 
 DEFAULT_PPO_KWARGS: dict[str, Any] = {
@@ -34,6 +38,13 @@ DEFAULT_PPO_KWARGS: dict[str, Any] = {
     "policy_kwargs": {"net_arch": [128, 128]},
     "verbose": 1,
 }
+
+
+def select_training_device() -> str:
+    """Use CUDA whenever PyTorch can access an NVIDIA GPU."""
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def build_training_environment(
@@ -132,15 +143,30 @@ def train_ppo_artifact(
     validation_enabled = bool(validation_config.get("enabled", True))
     if validation_enabled and validation_data is not None:
         evaluation_envs: dict[str, Any] = {}
+        window_days = int(validation_config.get("window_days", 0))
+        min_window_days = int(validation_config.get("min_window_days", 1))
         for symbol, val_df in validation_data.items():
-            raw_val = build_training_environment(
-                featured_data=val_df,
-                environment_config=config["environment"],
-                friction_config=config["friction"],
+            windows = (
+                split_into_day_windows(
+                    val_df,
+                    window_days=window_days,
+                    min_window_days=min_window_days,
+                )
+                if window_days > 0
+                else {"full": val_df}
             )
-            evaluation_envs[symbol] = (
-                NormalizedObservationEnv(raw_val, normalizer) if normalizer is not None else raw_val
-            )
+            for window_label, window_df in windows.items():
+                raw_val = build_training_environment(
+                    featured_data=window_df,
+                    environment_config=config["environment"],
+                    friction_config=config["friction"],
+                )
+                key = symbol if window_days <= 0 else f"{symbol}/{window_label}"
+                evaluation_envs[key] = (
+                    NormalizedObservationEnv(raw_val, normalizer)
+                    if normalizer is not None
+                    else raw_val
+                )
         validation_callback = FullSplitValidationCallback(
             evaluation_envs,
             eval_freq=int(validation_config.get("eval_freq", 25_000)),
@@ -148,6 +174,7 @@ def train_ppo_artifact(
             seed=int(validation_config.get("seed", seed)),
             deterministic=bool(validation_config.get("deterministic", True)),
             verbose=int(validation_config.get("verbose", 1)),
+            selection=validation_config.get("selection"),
         )
 
     tensorboard_config = config["agent"].get("tensorboard", {})
@@ -171,11 +198,12 @@ def train_ppo_artifact(
         log_dir.mkdir(parents=True, exist_ok=True)
         ppo_kwargs["tensorboard_log"] = str(log_dir)
     ppo_kwargs.update(model_kwargs or {})
+    training_device = select_training_device()
     agent = make_rl_agent(
         model_name=config["agent"]["rl_model_name"],
         policy="MlpPolicy",
         seed=seed,
-        device="cpu",
+        device=training_device,
         model_kwargs=ppo_kwargs,
     )
     callbacks: list[Any] = []
@@ -184,6 +212,7 @@ def train_ppo_artifact(
             TradingMetricsTensorBoardCallback(
                 initial_cash=config["environment"]["initial_cash"],
                 max_units=config["environment"]["max_units"],
+                reward_info_keys=active_reward_info_keys(config["environment"]),
             )
         )
     if validation_callback is not None:
@@ -232,6 +261,7 @@ def train_ppo_artifact(
         training_params={
             "total_timesteps": total_timesteps,
             "seed": seed,
+            "device": training_device,
             "ppo": ppo_kwargs,
             "normalization": normalization_config,
             "tensorboard": {

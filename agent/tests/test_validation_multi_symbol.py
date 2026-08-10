@@ -5,7 +5,11 @@ from unittest.mock import patch
 
 import pytest
 
-from models.validation import FullSplitValidationCallback, ValidationSnapshot
+from models.validation import (
+    FullSplitValidationCallback,
+    ValidationSnapshot,
+    summarize_validation_snapshots,
+)
 
 
 def _snapshot(total_return: float, timestep: int = 0) -> ValidationSnapshot:
@@ -76,9 +80,34 @@ def test_logger_records_per_symbol_and_mean():
         autospec=False,
     ):
         cb._evaluate_and_maybe_update()
-    assert logger.records["validation/return_AAA"] == pytest.approx(0.10)
-    assert logger.records["validation/return_BBB"] == pytest.approx(0.30)
     assert logger.records["validation/mean_total_return"] == pytest.approx(0.20)
+    assert logger.records["validation/median_total_return"] == pytest.approx(0.20)
+    assert logger.records["validation/worst_total_return"] == pytest.approx(0.10)
+
+
+def test_robust_selection_penalizes_bad_window_and_drawdown():
+    balanced = {
+        "AAA/w01": _snapshot(0.08),
+        "BBB/w01": _snapshot(0.06),
+    }
+    fragile = {
+        "AAA/w01": _snapshot(0.30),
+        "BBB/w01": ValidationSnapshot(
+            **{**_snapshot(-0.12).__dict__, "max_drawdown": -0.30}
+        ),
+    }
+    selection = {
+        "metric": "robust_return",
+        "weights": {"median_return": 1.0, "worst_return": 0.5, "max_drawdown": 0.5},
+    }
+
+    balanced_score = summarize_validation_snapshots(
+        balanced, selection=selection
+    )["selection_score"]
+    fragile_score = summarize_validation_snapshots(
+        fragile, selection=selection
+    )["selection_score"]
+    assert balanced_score > fragile_score
 
 
 def test_rejects_empty_env_dict():

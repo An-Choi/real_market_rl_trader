@@ -13,6 +13,7 @@ from models.normalization import FeatureNormalizer
 from models.training import (
     build_training_environment,
     build_vec_training_environment,
+    select_training_device,
     train_ppo_artifact,
 )
 
@@ -58,6 +59,16 @@ def _config() -> dict:
 
 
 BOUNDARIES = {"train_end_date": "2026-01-10", "validation_end_date": "2026-01-11", "purge_days": 0}
+
+
+@pytest.mark.parametrize(("cuda_available", "expected"), [(True, "cuda"), (False, "cpu")])
+def test_training_device_always_prefers_cuda_when_available(
+    monkeypatch, cuda_available, expected,
+):
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
+    assert select_training_device() == expected
 
 
 def test_vec_env_has_one_sub_env_per_symbol_and_forwards_masks():

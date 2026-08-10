@@ -60,9 +60,18 @@ agent:
   validation:
     enabled: true
     eval_freq: 25000
+    window_days: 20
+    min_window_days: 10
     deterministic: true
     seed: 42
     verbose: 1
+    # 평균 수익률 하나가 아니라 중앙 성과, 손실이 가장 큰 window, 낙폭을 함께 본다.
+    selection:
+      metric: robust_return
+      weights:
+        median_return: 1.0
+        worst_return: 0.5
+        max_drawdown: 0.5
   ppo:
     learning_rate: 0.0003
     n_steps: 2048
@@ -82,6 +91,11 @@ agent:
 backtest:
   max_steps:
   benchmark: buy_and_hold
+
+walk_forward:
+  folds: 3
+  validation_days: 20
+  test_days: 20
 
 
 seed: 42
