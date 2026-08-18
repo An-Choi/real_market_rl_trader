@@ -112,9 +112,10 @@ class RLAgent:
         import numpy as np
 
         values = np.asarray(observation)
-        if values.shape[-1] < 4:
-            raise ValueError("observation is missing the four portfolio state fields")
-        units_held_frac = values[..., -4]
+        if values.shape[-1] < 5:
+            raise ValueError("observation is missing the five portfolio state fields")
+        # portfolio state 5필드: [units, pnl, duration, tod, liquidity] → units는 -5
+        units_held_frac = values[..., -5]
         return np.stack(
             (
                 np.ones_like(units_held_frac, dtype=bool),
