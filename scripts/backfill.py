@@ -43,6 +43,15 @@ from pipeline.kis_historical import KISHistoricalFetcher  # noqa: E402
 DEFAULT_SYMBOLS = "005930"
 EXPECTED_BARS_PER_DAY = 381
 
+# 시장 프로파일: 시장구분 코드 → 저장 interval·세션 시각·페이지 수.
+# un의 max_pages=8: 08:00~20:00 실측 6페이지 + 여유 (하한/빈 응답 조기종료라 초과분 무해)
+MARKET_PROFILES = {
+    "j": {"market_code": "J", "interval": "1m", "end_hour": "153000",
+          "first_hour": "090000", "max_pages": 4},
+    "un": {"market_code": "UN", "interval": "1m-un", "end_hour": "200000",
+           "first_hour": "080000", "max_pages": 8},
+}
+
 
 def _parse_symbols(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
@@ -80,6 +89,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-minute", action="store_true")
     parser.add_argument("--overwrite", action="store_true",
                         help="Re-fetch and overwrite existing Parquet partitions")
+    parser.add_argument("--market", type=str, choices=sorted(MARKET_PROFILES), default="j",
+                        help="j=KRX 본장(1m/), un=KRX+NXT 통합 전 세션 08:00~20:00(1m-un/)")
     parser.add_argument("--refresh-current", action="store_true",
                         help="Daily-run mode: re-fetch current minute month + full daily refresh")
     parser.add_argument("--force-months", type=str, default="",
@@ -88,7 +99,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--token-cache", type=Path, default=Path("data/.kis_token.json"))
     parser.add_argument("--rate-limit-sleep", type=float, default=0.4,
                         help="Demo 0.4-0.5s, real 0.05s recommended")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.market == "un":
+        if args.refresh_current:
+            parser.error("--market un은 --refresh-current를 지원하지 않습니다 (J 전용 모드)")
+        args.skip_daily = True  # UN은 분봉만 수집 (일봉·feature는 J 유지)
+    return args
 
 
 def _iso(value: str) -> date:
@@ -156,6 +172,7 @@ def main() -> None:
 
     force_months = _parse_force_months(args.force_months)
     today = date.today()
+    profile = MARKET_PROFILES[args.market]
 
     if args.refresh_current:
         _write_github_summary("| symbol | daily | minute saved | force | today bars | coverage |")
@@ -163,7 +180,10 @@ def main() -> None:
 
     for symbol in symbols:
         fetcher = KISHistoricalFetcher(
-            auth=auth, symbol=symbol, rate_limit_sleep=args.rate_limit_sleep
+            auth=auth, symbol=symbol, rate_limit_sleep=args.rate_limit_sleep,
+            market_code=profile["market_code"],
+            minute_end_hour=profile["end_hour"],
+            minute_first_hour=profile["first_hour"],
         )
         logging.info("=== Backfill %s ===", symbol)
 
@@ -200,14 +220,16 @@ def main() -> None:
             saved = collector.backfill_minute_monthly(
                 fetcher=fetcher, symbol=symbol,
                 start=minute_start, end=minute_end, overwrite=args.overwrite,
+                max_pages_per_day=profile["max_pages"], interval=profile["interval"],
             )
             logging.info("[%s] minute partitions saved: %d", symbol, len(saved))
         if force_months:
             force_results = collector.force_month_refetch(
-                fetcher, symbol=symbol, months=force_months
+                fetcher, symbol=symbol, months=force_months,
+                max_pages_per_day=profile["max_pages"], interval=profile["interval"],
             )
             logging.info("[%s] force months: %s", symbol, force_results)
-        for warning in collector.audit_minute_coverage(symbol=symbol, today=today):
+        for warning in collector.audit_minute_coverage(symbol=symbol, today=today, interval=profile["interval"]):
             logging.warning("[%s] coverage: %s", symbol, warning)
 
 

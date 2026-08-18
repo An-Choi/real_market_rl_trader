@@ -92,3 +92,41 @@ def test_write_github_summary_appends_when_env_set(tmp_path, monkeypatch) -> Non
 
     monkeypatch.delenv("GITHUB_STEP_SUMMARY")
     mod._write_github_summary("ignored")     # env 없으면 no-op (예외 없이)
+
+
+def test_cli_market_defaults_to_j(monkeypatch) -> None:
+    mod = _load_backfill()
+    monkeypatch.setattr("sys.argv", ["backfill.py"])
+    args = mod.parse_args()
+    assert args.market == "j"
+    assert args.skip_daily is False
+
+
+def test_cli_market_un_implies_skip_daily(monkeypatch) -> None:
+    mod = _load_backfill()
+    monkeypatch.setattr("sys.argv", ["backfill.py", "--market", "un"])
+    args = mod.parse_args()
+    assert args.market == "un"
+    assert args.skip_daily is True                         # UN은 분봉만 수집 (스펙 §2)
+
+
+def test_cli_market_un_rejects_refresh_current(monkeypatch) -> None:
+    mod = _load_backfill()
+    monkeypatch.setattr("sys.argv", ["backfill.py", "--market", "un", "--refresh-current"])
+    with pytest.raises(SystemExit):
+        mod.parse_args()
+
+
+def test_market_profiles_match_spec() -> None:
+    mod = _load_backfill()
+    un = mod.MARKET_PROFILES["un"]
+    assert un["market_code"] == "UN"
+    assert un["interval"] == "1m-un"
+    assert un["end_hour"] == "200000"
+    assert un["first_hour"] == "080000"
+    assert un["max_pages"] >= 6                            # 08:00~20:00 실측 6페이지
+    # J 프로파일은 기존 하드코딩 값과 정확히 일치해야 함 (동작 불변 가드)
+    assert mod.MARKET_PROFILES["j"] == {
+        "market_code": "J", "interval": "1m", "end_hour": "153000",
+        "first_hour": "090000", "max_pages": 4,
+    }

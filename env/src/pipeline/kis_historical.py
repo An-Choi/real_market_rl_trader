@@ -51,6 +51,9 @@ class KISHistoricalFetcher:
     auth: KISAuth
     symbol: str
     rate_limit_sleep: float = 0.5  # demo=0.5, real=0.05 권장
+    market_code: str = "J"  # FID_COND_MRKT_DIV_CODE: J=KRX, UN=KRX+NXT 통합
+    minute_end_hour: str = "153000"  # 분봉 역방향 페이징 시작 시각
+    minute_first_hour: str = "090000"  # 분봉 페이징 하한 (도달 시 종료)
 
     def fetch_daily(self, start: date, end: date) -> pd.DataFrame:
         windows = _make_daily_windows(start, end)
@@ -70,7 +73,7 @@ class KISHistoricalFetcher:
 
     def _fetch_daily_window(self, window_start: date, window_end: date) -> pd.DataFrame:
         params = {
-            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_MRKT_DIV_CODE": self.market_code,
             "FID_INPUT_ISCD": self.symbol,
             "FID_INPUT_DATE_1": window_start.strftime("%Y%m%d"),
             "FID_INPUT_DATE_2": window_end.strftime("%Y%m%d"),
@@ -86,14 +89,14 @@ class KISHistoricalFetcher:
     def fetch_minute_for_date(
         self,
         target_date: date,
-        end_hour: str = "153000",
+        end_hour: str | None = None,
         max_pages: int = 4,
     ) -> pd.DataFrame:
         frames: list[pd.DataFrame] = []
-        current_hour = end_hour
+        current_hour = end_hour or self.minute_end_hour
         for _ in range(max_pages):
             params = {
-                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_MRKT_DIV_CODE": self.market_code,
                 "FID_INPUT_ISCD": self.symbol,
                 "FID_INPUT_HOUR_1": current_hour,
                 "FID_INPUT_DATE_1": target_date.strftime("%Y%m%d"),
@@ -107,7 +110,7 @@ class KISHistoricalFetcher:
             frame = _normalize_minute(rows)
             frames.append(frame)
             earliest = frame["Timestamp"].min()
-            if earliest.strftime("%H%M%S") <= "090000":
+            if earliest.strftime("%H%M%S") <= self.minute_first_hour:
                 break
             current_hour = (earliest - pd.Timedelta(minutes=1)).strftime("%H%M%S")
             if self.rate_limit_sleep > 0:
