@@ -22,7 +22,7 @@ def _tampered_copy(tiny_artifact_dir, tmp_path, mutate):
 
 def test_load_happy_path_and_deterministic_predict(tiny_artifact_dir):
     predictor = Predictor.load(tiny_artifact_dir)
-    obs = np.zeros(13, dtype=np.float32)
+    obs = np.zeros(16, dtype=np.float32)
     mask = np.array([True, True, False])
     first = predictor.predict(obs, mask)
     assert first in (0, 1, 2)
@@ -80,7 +80,7 @@ def test_serving_accepts_v4_artifact_metadata(tiny_artifact_dir, tmp_path):
 
     tampered = _tampered_copy(tiny_artifact_dir, tmp_path, mutate)
     predictor = Predictor.load(tampered)
-    obs = np.zeros(13, dtype=np.float32)
+    obs = np.zeros(16, dtype=np.float32)
     mask = np.array([True, True, False])
     assert predictor.predict(obs, mask) in (0, 1, 2)
 

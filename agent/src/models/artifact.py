@@ -71,6 +71,7 @@ DEFAULT_PORTFOLIO_STATE_FIELDS = [
     "unrealized_pnl_norm",
     "holding_duration_norm",
     "tod_frac",
+    "liquidity_pressure",
 ]
 
 # artifact.py: agent/src/models/ → repo root는 3단계 위

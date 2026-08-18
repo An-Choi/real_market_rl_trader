@@ -1,6 +1,6 @@
 """Observation·mask 공유 순수 함수 — env와 serving이 같은 공식을 호출한다.
 
-train/serve parity의 핵심: portfolio state 4필드와 action mask의 공식이
+train/serve parity의 핵심: portfolio state 5필드와 action mask의 공식이
 여기 한 곳에만 존재한다 (observation-contract §2·§3).
 """
 
@@ -8,6 +8,14 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+
+
+def adv_value_from_row(row: pd.Series) -> float | None:
+    """v4 pass-through 컬럼 Adv20 → 유동성 계산 입력. 부재/NaN은 None(기준점 0)."""
+    raw = row.get("Adv20")
+    if raw is None or pd.isna(raw):
+        return None
+    return float(raw)
 
 
 def extract_feature_vector(row: pd.Series, feature_columns: list[str]) -> np.ndarray:
@@ -30,6 +38,7 @@ def build_portfolio_state(
     duration_horizon_bars: int,
     step_in_day: int,
     nominal_bars_per_day: int,
+    adv_value: float | None,
 ) -> np.ndarray:
     units_held_frac = units_held / max(max_units, 1)
     held_value = shares_held * price
@@ -40,8 +49,18 @@ def build_portfolio_state(
     else:
         holding_duration_norm = 0.0
     tod_frac = min(step_in_day / max(nominal_bars_per_day - 1, 1), 1.0)
+    # liquidity_pressure: unit 주문금액이 ADV에서 차지하는 비중의 log10 스케일.
+    # 기준점 0 = 1e-4 (unit이 ADV의 0.01%), ±1 = 1e-8~1. adv 부재 시 기준점 0.
+    if adv_value is not None and np.isfinite(adv_value) and adv_value > 0:
+        unit_notional = initial_cash * unit_fraction
+        liquidity_pressure = float(
+            np.clip((np.log10(unit_notional / adv_value) + 4.0) / 4.0, -1.0, 1.0)
+        )
+    else:
+        liquidity_pressure = 0.0
     return np.array(
-        [units_held_frac, unrealized_pnl_norm, holding_duration_norm, tod_frac],
+        [units_held_frac, unrealized_pnl_norm, holding_duration_norm, tod_frac,
+         liquidity_pressure],
         dtype=np.float32,
     )
 

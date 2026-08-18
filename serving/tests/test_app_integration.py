@@ -40,10 +40,10 @@ def test_predict_happy_path(client, minute_data):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["label"] in ("hold", "add_unit", "clear")
-    assert len(body["observation"]) == 13
+    assert len(body["observation"]) == 16
     assert body["action_mask"][0] is True
     assert body["artifact_id"] == "ppo-fs3-test"
-    assert body["feature_schema_version"] == 3
+    assert body["feature_schema_version"] == 4
     assert body["bar_close"] > 0
 
 
@@ -107,7 +107,7 @@ def test_invariant_violation_maps_to_422(client, minute_data):
 def test_metadata_endpoint(client):
     body = client.get("/metadata").json()
     assert body["artifact_id"] == "ppo-fs3-test"
-    assert body["feature_schema_version"] == 3
+    assert body["feature_schema_version"] == 4
     assert body["env_params"]["max_units"] == 5
     assert body["action_space"]["labels"] == ["hold", "add_unit", "clear"]
 

@@ -21,7 +21,7 @@ from utils.config_loader import load_config
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _write_synthetic_minute_parquet(root: Path, symbol: str, days: int = 60) -> None:
+def _write_synthetic_minute_parquet(root: Path, symbol: str, days: int = 80) -> None:
     """연속 `days` 거래일(주말 제외) 분봉 데이터를 하나의 parquet에 기록한다.
 
     Task 11에서 config `purge_days: 5`가 적용되면 기존 ~20거래일 fixture는

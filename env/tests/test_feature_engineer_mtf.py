@@ -23,7 +23,8 @@ def _minute_days(days: list[str], per_day: int = 390) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-DAYS = [f"2025-06-{d:02d}" for d in (2, 3, 4, 5, 6, 9, 10, 11)]
+# cross-day warm-up(20거래일)을 지나 최소 2일이 살아남도록 22거래일
+DAYS = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2025-06-02", periods=22)]
 
 
 def test_feature_columns_frozen_order() -> None:
@@ -31,14 +32,24 @@ def test_feature_columns_frozen_order() -> None:
         "log_ret_1", "log_ret_3", "log_ret_12",
         "realized_vol_12", "relative_volume", "vwap_dev",
         "trend_strength_30m", "macd_hist_30m", "vol_regime_30m",
+        "gap_open", "relative_volume_tod",
     )
 
 
 def test_output_columns_and_no_nan() -> None:
     out = FeatureEngineer().transform(_minute_days(DAYS))
-    expected = ["Timestamp", "Close", "ExecPrice"] + list(FeatureEngineer.FEATURE_COLUMNS)
+    expected = ["Timestamp", "Close", "ExecPrice", "Adv20"] + list(
+        FeatureEngineer.FEATURE_COLUMNS
+    )
     assert list(out.columns) == expected
     assert not out[list(FeatureEngineer.FEATURE_COLUMNS)].isna().any().any()
+    assert out["Adv20"].notna().all()  # 살아남은 행에서 pass-through 항상 존재
+
+
+def test_cross_day_warmup_days_are_dropped() -> None:
+    out = FeatureEngineer().transform(_minute_days(DAYS))
+    out_days = sorted({d.strftime("%Y-%m-%d") for d in pd.to_datetime(out["Timestamp"])})
+    assert out_days == DAYS[20:]  # 앞 20거래일은 warm-up으로 소실
 
 
 def test_transform_deterministic() -> None:
@@ -82,8 +93,8 @@ def _minute_days_with_auction(days: list[str], auction_offset: float = 2.0) -> p
     return pd.concat(frames, ignore_index=True)
 
 
-def test_schema_version_bumped_for_exec_price() -> None:
-    assert FeatureEngineer.FEATURE_SCHEMA_VERSION == 3
+def test_schema_version_bumped_for_cross_day_features() -> None:
+    assert FeatureEngineer.FEATURE_SCHEMA_VERSION == 4
 
 
 def test_exec_price_is_next_minute_open() -> None:
@@ -126,13 +137,14 @@ def test_future_bar_mutation_does_not_change_past_features() -> None:
     out_a = FeatureEngineer().transform(mdf)
     altered = mdf.copy()
     # 마지막 거래일의 뒤쪽 분봉 Close를 변조
-    last_day = pd.to_datetime(altered["Timestamp"]).dt.date == pd.Timestamp("2025-06-11").date()
+    final_date = pd.Timestamp(DAYS[-1]).date()
+    last_day = pd.to_datetime(altered["Timestamp"]).dt.date == final_date
     idx = altered[last_day].index[-30:]
     altered.loc[idx, "Close"] = altered.loc[idx, "Close"] + 50.0
     out_b = FeatureEngineer().transform(altered)
-    # 변조 이전 거래일(06-10까지) feature는 불변
-    mask_a = pd.to_datetime(out_a["Timestamp"]).dt.date < pd.Timestamp("2025-06-11").date()
-    mask_b = pd.to_datetime(out_b["Timestamp"]).dt.date < pd.Timestamp("2025-06-11").date()
+    # 변조 이전 거래일 feature는 불변
+    mask_a = pd.to_datetime(out_a["Timestamp"]).dt.date < final_date
+    mask_b = pd.to_datetime(out_b["Timestamp"]).dt.date < final_date
     pd.testing.assert_frame_equal(
         out_a[mask_a].reset_index(drop=True), out_b[mask_b].reset_index(drop=True)
     )

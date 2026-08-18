@@ -54,7 +54,8 @@ def make_minute_data(days: int, seed: int = 7, start: str = "2026-06-01") -> pd.
 
 @pytest.fixture(scope="session")
 def minute_data() -> pd.DataFrame:
-    return make_minute_data(days=12)
+    # cross-day warm-up(20거래일)을 지나 feature 행이 남도록 26거래일
+    return make_minute_data(days=26)
 
 
 @pytest.fixture()
@@ -107,8 +108,9 @@ def tiny_artifact_dir(tmp_path_factory, minute_data):
         feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         portfolio_state_fields=["units_held_frac", "unrealized_pnl_norm",
-                                "holding_duration_norm", "tod_frac"],
-        observation_dim=13,
+                                "holding_duration_norm", "tod_frac",
+                                "liquidity_pressure"],
+        observation_dim=len(FeatureEngineer.FEATURE_COLUMNS) + 5,
         action_space={"type": "discrete", "n": 3,
                       "labels": list(EXPECTED_ACTION_LABELS)},
         normalization=None,

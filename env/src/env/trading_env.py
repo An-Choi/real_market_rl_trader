@@ -12,6 +12,7 @@ from gymnasium import spaces
 from friction.friction_model import FrictionModel
 from env.reward import RewardConfig, RewardTerms, calculate_reward_terms
 from env.observation import (
+    adv_value_from_row,
     assemble_observation,
     build_portfolio_state,
     can_afford_add,
@@ -136,7 +137,7 @@ class TradingEnvironment(gym.Env):
         )
 
         self.action_space = spaces.Discrete(3)
-        observation_size = len(self.feature_columns) + 4
+        observation_size = len(self.feature_columns) + 5
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -377,6 +378,7 @@ class TradingEnvironment(gym.Env):
             duration_horizon_bars=self.duration_horizon_bars,
             step_in_day=self.current_step - day_start,
             nominal_bars_per_day=self.nominal_bars_per_day,
+            adv_value=adv_value_from_row(row),
         )
         return assemble_observation(features, portfolio_state)
 

@@ -18,6 +18,7 @@ import pandas as pd
 
 from data.defect_days import drop_defect_days
 from env.observation import (
+    adv_value_from_row,
     assemble_observation,
     build_portfolio_state,
     compute_action_mask,
@@ -94,6 +95,7 @@ def build_decision_inputs(
         duration_horizon_bars=int(env_params["duration_horizon_bars"]),
         step_in_day=step_in_day,
         nominal_bars_per_day=int(env_params["nominal_bars_per_day"]),
+        adv_value=adv_value_from_row(row),
     )
     features = extract_feature_vector(row, list(feature_engineer.FEATURE_COLUMNS))
     action_mask = compute_action_mask(

@@ -49,7 +49,7 @@ def built_agent():
 
 PORTFOLIO_STATE_FIELDS = [
     "units_held_frac", "unrealized_pnl_norm",
-    "holding_duration_norm", "tod_frac",
+    "holding_duration_norm", "tod_frac", "liquidity_pressure",
 ]
 
 
