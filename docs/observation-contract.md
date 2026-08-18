@@ -1,6 +1,6 @@
 # Observation Contract — RL 학습 ↔ 서빙
 
-**기준:** `FEATURE_SCHEMA_VERSION = 3` / artifact format v3
+**기준:** `FEATURE_SCHEMA_VERSION = 4` / artifact format v3·v4
 **진실의 원천:** `env/src/data/feature_engineer.py`의 `FeatureEngineer.FEATURE_COLUMNS`·
 `FEATURE_SCHEMA_VERSION`, `env/src/env/trading_env.py`의 `_get_observation()`.
 이 문서는 코드를 미러링하며, 불일치 시 코드가 우선한다 (문서를 갱신할 것).
@@ -8,9 +8,9 @@
 RL 학습과 서빙(FastAPI/Spring)이 지켜야 하는 계약. 이 계약이 깨지면
 모델은 에러 없이 조용히 잘못된 action을 내므로, 변경은 반드시 versioning 규칙을 따른다.
 
-## 1. Observation 벡터 (13차원, float32)
+## 1. Observation 벡터 (16차원, float32)
 
-순서 고정: feature 9개 → portfolio state 4개.
+순서 고정: feature 11개 → portfolio state 5개.
 
 | idx | 이름 | 구간 |
 |---|---|---|
@@ -23,15 +23,33 @@ RL 학습과 서빙(FastAPI/Spring)이 지켜야 하는 계약. 이 계약이 �
 | 6 | `trend_strength_30m` | 30분 context |
 | 7 | `macd_hist_30m` | 30분 context |
 | 8 | `vol_regime_30m` | 30분 context |
-| 9 | `units_held_frac` | portfolio state |
-| 10 | `unrealized_pnl_norm` | portfolio state |
-| 11 | `holding_duration_norm` | portfolio state |
-| 12 | `tod_frac` | portfolio state |
+| 9 | `gap_open` | cross-day (v4) |
+| 10 | `relative_volume_tod` | cross-day (v4) |
+| 11 | `units_held_frac` | portfolio state |
+| 12 | `unrealized_pnl_norm` | portfolio state |
+| 13 | `holding_duration_norm` | portfolio state |
+| 14 | `tod_frac` | portfolio state |
+| 15 | `liquidity_pressure` | portfolio state (v4) |
 
-feature(idx 0–8)는 `FeatureEngineer.transform()`이 계산한다. 서빙 경로도 **같은 코드를
+feature(idx 0–10)는 `FeatureEngineer.transform()`이 계산한다. 서빙 경로도 **같은 코드를
 그대로 재사용**한다(별도 재구현 금지 — train/serve parity 원칙).
 
-## 2. Portfolio state 재현 공식 (idx 9–12)
+### 1.5 cross-day feature (schema v4)
+
+micro/context feature의 day-reset 원칙과 달리, cross-day feature는 **완료된 과거
+거래일만** 참조한다(causal — 당일 값은 분모·기준값에 절대 불포함):
+
+- `gap_open = log(당일 첫 5분 bar Open / 전일 종가)` — 전일 종가는 종가 동시호가
+  체결가 우선, 경매 print가 없으면 전일 마지막 정규 5분 bar Close. 하루 상수.
+  데이터상 첫 거래일은 NaN → drop.
+- `relative_volume_tod = 현재 5분 슬롯 Volume / 직전 20거래일 동일 슬롯 Volume 중앙값`
+  (당일 제외). 시간대 U-shape을 보정한 이상 거래량 신호.
+- **warm-up**: 두 feature 요건상 데이터 앞 20거래일 행은 `transform()` 출력에서 drop.
+- `transform()` 출력에는 관찰이 아닌 pass-through 컬럼 **`Adv20`**(직전 20거래일
+  일평균 거래대금, 당일 제외)이 추가된다 — `ExecPrice`처럼 `FEATURE_COLUMNS`에
+  포함되지 않으며, §2의 `liquidity_pressure` 계산 입력으로만 쓰인다.
+
+## 2. Portfolio state 재현 공식 (idx 11–15)
 
 서빙 쪽이 정확히 같은 값을 만들어야 하는 parity의 핵심.
 `trading_env.py`의 `_get_observation()` 기준:
@@ -50,6 +68,12 @@ feature(idx 0–8)는 `FeatureEngineer.transform()`이 계산한다. 서빙 경�
   - `duration_horizon_bars`는 artifact `env_params`의 고정 상수
     (학습 config의 `episode_days × nominal_bars_per_day`). runtime episode
     길이와 무관 — 서빙은 실거래 진입 후 경과 bar 수를 세서 clip만 하면 된다.
+- `liquidity_pressure = clip((log10(unit_notional / Adv20) + 4) / 4, −1.0, 1.0)` (v4)
+  - `unit_notional = initial_cash × unit_fraction`, `Adv20`은 §1.5의 pass-through 컬럼.
+  - 기준점 0 = unit 주문금액이 ADV의 1e-4(0.01%). +1 쪽 = 저유동성, −1 쪽 = 고유동성.
+  - `Adv20`이 없거나(NaN/≤0/구버전 프레임) → **0.0** (기준점으로 fallback).
+  - 공식은 `env/src/env/observation.py`의 `build_portfolio_state()`·`adv_value_from_row()`
+    한 곳에만 존재 — env·serving이 같은 함수를 호출한다.
 - `tod_frac = min(당일 내 step / max(nominal_bars_per_day − 1, 1), 1.0)` (당일 기준,
   episode가 여러 날이어도 매일 리셋)
   - `nominal_bars_per_day`는 artifact `env_params`에 기록된 **고정 상수**(config
@@ -113,7 +137,10 @@ episode 끝은 `truncated=True`(continuing task)이며, 미청산 종료의 가�
 - backtest/평가 실행 경로(`load_artifact(env=...)`)에서도 env가 선언한
   `feature_schema_version`과 artifact 값을 비교해 불일치 시 거부한다
   (서버 기동 거부와 동일한 계약의 실행 시점 버전).
-- 서버는 artifact format v3만 수용한다(v2 이하 기동 거부). v3 = v2 필수 키 + `friction_params`.
+- 서버는 artifact format v3·v4를 수용한다(v2 이하 기동 거부). v3 = v2 필수 키 +
+  `friction_params`, v4 = v3 + `trained_split`·`split_boundaries`·`per_symbol`.
+- `save_artifact`는 모델의 observation 차원과 `metadata.observation_dim`이 다르면
+  **저장 자체를 거부**한다 (불일치 artifact 생성 차단).
 
 ## 5. Normalization 규약
 
@@ -122,7 +149,7 @@ artifact `metadata.json`의 `normalization` 필드:
 - `null` — legacy artifact with no observation normalization.
 - `{"type": "feature_standardization", "file": "feature_normalization.json"}` — current
   contract. Mean/std are fit on the training split only, frozen in the artifact,
-  and applied to feature indices 0-8. Portfolio state indices 9-12 are unchanged.
+  and applied to feature indices 0-10. Portfolio state indices 11-15 are unchanged.
 - `{"type": "sb3_vecnormalize", "file": "vecnormalize.pkl"}` — 학습이 VecNormalize를
   사용한 경우. 서버는 해당 stats로 observation을 정규화한 뒤 모델에 넣는다
   (stats는 학습 시점에 freeze된 값 — 서빙 중 업데이트 금지).
@@ -136,17 +163,18 @@ artifact `metadata.json`의 `normalization` 필드:
 ```json
 {
   "artifact_format_version": 3,
-  "artifact_id": "ppo-fs3-20260709-153000",
+  "artifact_id": "ppo-fs4-20260818-153000",
   "created_at": "2026-07-09T06:30:00Z",
   "algo": "PPO",
   "policy": "MlpPolicy",
-  "feature_schema_version": 3,
+  "feature_schema_version": 4,
   "feature_columns": ["log_ret_1", "log_ret_3", "log_ret_12",
     "realized_vol_12", "relative_volume", "vwap_dev",
-    "trend_strength_30m", "macd_hist_30m", "vol_regime_30m"],
+    "trend_strength_30m", "macd_hist_30m", "vol_regime_30m",
+    "gap_open", "relative_volume_tod"],
   "portfolio_state_fields": ["units_held_frac", "unrealized_pnl_norm",
-    "holding_duration_norm", "tod_frac"],
-  "observation_dim": 13,
+    "holding_duration_norm", "tod_frac", "liquidity_pressure"],
+  "observation_dim": 16,
   "action_space": {"type": "discrete", "n": 3, "labels": ["hold", "add_unit", "clear"]},
   "normalization": {"type": "feature_standardization", "file": "feature_normalization.json"},
   "train_git_sha": "ef4b63a",
@@ -196,8 +224,9 @@ meta = ArtifactMetadata(
     feature_schema_version=FeatureEngineer.FEATURE_SCHEMA_VERSION,
     feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
     portfolio_state_fields=["units_held_frac", "unrealized_pnl_norm",
-                            "holding_duration_norm", "tod_frac"],
-    observation_dim=len(FeatureEngineer.FEATURE_COLUMNS) + 4,
+                            "holding_duration_norm", "tod_frac",
+                            "liquidity_pressure"],
+    observation_dim=len(FeatureEngineer.FEATURE_COLUMNS) + 5,
     action_space={"type": "discrete", "n": 3, "labels": ["hold", "add_unit", "clear"]},
     normalization=None,  # VecNormalize 사용 시 §5의 블록 + vecnormalize_path 전달
     train_git_sha=current_git_sha(),

@@ -60,7 +60,7 @@ KIS API 키는 `.env`에 둡니다(`.env.example` 참고). `train.py`는 real �
 ## 현재 구현 범위
 
 - real-OHLCV 단일채널 `TradingEnvironment` (Gymnasium, Unit scaling-in, 연속 N거래일 에피소드)
-- leakage-safe MTF feature 생성 (5분 micro + 30분 context, 총 9개; 1분봉→5분 그리드 causal resample)
+- leakage-safe MTF feature 생성 (5분 micro + 30분 context + cross-day, 총 11개; 1분봉→5분 그리드 causal resample)
 - 매도 거래세 포함 friction model
 - SB3 Contrib `MaskablePPO` 연결용 `RLAgent` wrapper와 invalid-action masking
 - train split 기준 feature standardization과 artifact stats 복원
