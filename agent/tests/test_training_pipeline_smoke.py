@@ -14,7 +14,8 @@ from models.training import build_training_environment, train_ppo_artifact
 
 
 def _write_synthetic_minute_parquet(root: Path, symbol: str) -> None:
-    days = [f"2025-06-{d:02d}" for d in (2, 3, 4, 5, 6, 9, 10, 11)]
+    # cross-day warm-up(20거래일) 이후에도 학습 가능 일수가 남도록 26거래일
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2025-06-02", periods=26)]
     rng = np.random.default_rng(7)
     frames = []
     price = 100.0

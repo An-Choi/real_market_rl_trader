@@ -71,6 +71,7 @@ DEFAULT_PORTFOLIO_STATE_FIELDS = [
     "unrealized_pnl_norm",
     "holding_duration_norm",
     "tod_frac",
+    "liquidity_pressure",
 ]
 
 # artifact.py: agent/src/models/ → repo root는 3단계 위
@@ -587,6 +588,14 @@ def save_artifact(
     metadata.validate()
     if getattr(agent, "model", None) is None:
         raise ArtifactError("agent has no built model to save")
+    model_space = getattr(agent.model, "observation_space", None)
+    model_shape = getattr(model_space, "shape", None)
+    if model_shape and model_shape[0] != metadata.observation_dim:
+        raise ArtifactError(
+            f"model observation dim {model_shape[0]} != "
+            f"metadata observation_dim {metadata.observation_dim} — "
+            "불일치 artifact는 저장 단계에서 거부한다"
+        )
 
     norm = metadata.normalization
     if sum(

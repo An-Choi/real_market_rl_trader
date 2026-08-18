@@ -11,7 +11,8 @@ from data.feature_engineer import FeatureEngineer
 
 
 def _write_minute_parquet(root: Path, symbol: str) -> None:
-    days = [f"2025-06-{d:02d}" for d in (2, 3, 4, 5, 6, 9, 10, 11)]
+    # cross-day warm-up(20거래일) 이후에도 출력이 남도록 26거래일
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2025-06-02", periods=26)]
     frames = []
     price = 100.0
     rng = np.random.default_rng(1)
@@ -41,8 +42,9 @@ def test_build_creates_parquet(tmp_path: Path) -> None:
     cached = tmp_path / "processed" / "005930" / f"features_v{v}.parquet"
     assert cached.exists()
     assert list(out.columns) == (
-        ["Timestamp", "Close", "ExecPrice"] + list(FeatureEngineer.FEATURE_COLUMNS)
+        ["Timestamp", "Close", "ExecPrice", "Adv20"] + list(FeatureEngineer.FEATURE_COLUMNS)
     )
+    assert not out.empty  # warm-up을 지난 행이 실제로 존재
 
 
 def test_build_loads_existing(tmp_path: Path) -> None:

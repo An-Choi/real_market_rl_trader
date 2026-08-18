@@ -11,6 +11,7 @@ from __future__ import annotations
 import pandas as pd
 
 from data.context_features import add_context_features
+from data.cross_day_features import add_cross_day_features
 from data.defect_days import drop_defect_days
 from data.micro_features import add_micro_features
 from data.resample import add_minute_trading_value, resample_5min, split_closing_auction
@@ -54,19 +55,23 @@ def _add_exec_price(
 
 
 class FeatureEngineer:
-    # v3: 체결 계약 변경 — 경매 fold-in 제거(관찰 정화) + ExecPrice(실행 전용) 추가.
-    FEATURE_SCHEMA_VERSION: int = 3
+    # v4: cross-day feature 추가 — gap_open·relative_volume_tod(관찰) +
+    #     Adv20(pass-through, env portfolio state 유동성 계산용).
+    #     완료된 과거 거래일만 참조(causal) — day-reset의 의도적 완화.
+    FEATURE_SCHEMA_VERSION: int = 4
     FEATURE_COLUMNS: tuple[str, ...] = (
         "log_ret_1", "log_ret_3", "log_ret_12",
         "realized_vol_12", "relative_volume", "vwap_dev",
         "trend_strength_30m", "macd_hist_30m", "vol_regime_30m",
+        "gap_open", "relative_volume_tod",
     )
 
     def transform(self, minute_df: pd.DataFrame, ts_col: str = "Timestamp") -> pd.DataFrame:
-        """1분봉(멀티데이) → 5분 그리드 [Timestamp, Close, ExecPrice, <FEATURE_COLUMNS>].
+        """1분봉(멀티데이) → 5분 그리드 [Timestamp, Close, ExecPrice, Adv20, <FEATURE_COLUMNS>].
 
-        모든 feature lookback 만족 행만(NaN drop; ExecPrice의 NaN은 유지 —
-        env fallback 담당). 순수 함수: self 미변경, 입력 미변경.
+        모든 feature lookback 만족 행만(NaN drop — cross-day warm-up 20거래일
+        포함; ExecPrice의 NaN은 유지 — env fallback 담당). 순수 함수:
+        self 미변경, 입력 미변경.
         """
         clean = drop_defect_days(minute_df, ts_col)
         clean = add_minute_trading_value(clean, ts_col)
@@ -74,9 +79,10 @@ class FeatureEngineer:
         bars5 = resample_5min(regular, ts_col)
         bars5 = add_micro_features(bars5, ts_col)
         bars5 = add_context_features(bars5, regular, ts_col)
+        bars5 = add_cross_day_features(bars5, auction, ts_col)
         bars5 = _add_exec_price(bars5, regular, auction, ts_col)
 
-        cols = [ts_col, "Close", "ExecPrice", *self.FEATURE_COLUMNS]
+        cols = [ts_col, "Close", "ExecPrice", "Adv20", *self.FEATURE_COLUMNS]
         result = bars5[cols].dropna(subset=list(self.FEATURE_COLUMNS))
         return result.reset_index(drop=True)
 

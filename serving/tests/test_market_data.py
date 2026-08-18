@@ -70,9 +70,10 @@ def test_check_ready_rejects_missing_column(raw_data_dir):
 
 
 def test_get_recent_bars_missing_column_raises_provider_error(raw_data_dir):
-    target = sorted((raw_data_dir / "005930" / "1m").glob("*.parquet"))[0]
-    df = pd.read_parquet(target).drop(columns=["TradingValue"])
-    df.to_parquet(target)
+    # 월 파일이 여러 개일 수 있다 — 전부 손상시켜야 concat이 컬럼을 되살리지 못한다
+    for target in sorted((raw_data_dir / "005930" / "1m").glob("*.parquet")):
+        df = pd.read_parquet(target).drop(columns=["TradingValue"])
+        df.to_parquet(target)
     with pytest.raises(ProviderError):
         _provider(raw_data_dir).get_recent_bars(
             "005930", pd.Timestamp("2026-06-10 10:00", tz=TZ))

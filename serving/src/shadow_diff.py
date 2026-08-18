@@ -194,11 +194,12 @@ def run_diff(*, day, audit_dir: Path, manifest_dir: Path, artifact_dir: Path,
         )
         live_obs = record["observation"]
         rec_obs = [float(x) for x in recomputed.observation]
-        # zip은 짧은 쪽까지만 돌므로 길이 검사가 선행되어야 한다 (13차원 계약)
-        if len(live_obs) != len(rec_obs) or len(rec_obs) != 13:
+        # zip은 짧은 쪽까지만 돌므로 길이 검사가 선행되어야 한다 — 계약 차원은
+        # artifact 메타데이터(observation_dim)가 단일 진실
+        if len(live_obs) != len(rec_obs) or len(rec_obs) != meta.observation_dim:
             result.fail(EXIT_VALUE_MISMATCH,
                         f"{g} obs 길이 불일치: live={len(live_obs)} "
-                        f"recomputed={len(rec_obs)} (계약 13)")
+                        f"recomputed={len(rec_obs)} (계약 {meta.observation_dim})")
             continue
         for idx, (a, b) in enumerate(zip(live_obs, rec_obs)):
             if a != b:

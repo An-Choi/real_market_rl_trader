@@ -80,5 +80,20 @@ def test_observation_excludes_exec_price() -> None:
     # ExecPrice는 결정 시점 이후 미래 정보 — 관찰에 절대 포함 금지.
     env = make_env(_data([100.0, 100.0], [102.0, 102.0]))
     obs, _ = env.reset(seed=0)
-    assert len(obs) == 1 + 4                                   # feature 1개 + 포트폴리오 4개
+    assert len(obs) == 1 + 5                                   # feature 1개 + 포트폴리오 5개
     assert 102.0 not in np.asarray(obs)
+
+
+def test_observation_liquidity_reads_adv20_column() -> None:
+    # unit 2,000 / Adv20 2,000,000 = 1e-3 → (log10(1e-3)+4)/4 = 0.25
+    data = _data([100.0, 100.0], [102.0, 102.0])
+    data["Adv20"] = 2_000_000.0
+    env = make_env(data)
+    obs, _ = env.reset(seed=0)
+    assert obs[-1] == np.float32(0.25)
+
+
+def test_observation_liquidity_defaults_zero_without_adv20() -> None:
+    env = make_env(_data([100.0, 100.0], [102.0, 102.0]))
+    obs, _ = env.reset(seed=0)
+    assert obs[-1] == np.float32(0.0)

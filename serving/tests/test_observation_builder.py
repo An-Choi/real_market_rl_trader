@@ -72,7 +72,7 @@ def test_selects_last_completed_5min_bar(minute_data):
     as_of = pd.Timestamp(f"{day} 11:00:00", tz=TZ)
     result = _build(minute_data, as_of)
     assert result.bar_ts == pd.Timestamp(f"{day} 11:00:00", tz=TZ)
-    assert result.observation.shape == (13,)
+    assert result.observation.shape == (16,)
     assert result.observation.dtype == np.float32
 
 
@@ -110,7 +110,7 @@ def test_causality_future_rows_do_not_change_past(minute_data):
     day = _last_day(minute_data)
     as_of = pd.Timestamp(f"{day} 11:00:00", tz=TZ)
     base = _build(minute_data, as_of)
-    longer = make_minute_data(days=13)  # 같은 seed → 같은 prefix + 미래 하루 추가
+    longer = make_minute_data(days=27)  # 같은 seed → 같은 prefix + 미래 하루 추가
     with_future = _build(longer, as_of)
     np.testing.assert_array_equal(base.observation, with_future.observation)
     assert base.bar_ts == with_future.bar_ts
@@ -135,7 +135,7 @@ def test_portfolio_fields_flow_into_observation(minute_data):
     flat = _build(minute_data, as_of)
     held = _build(minute_data, as_of, units_held=2,
                   shares_held=0.02, bars_since_entry=37)
-    assert held.observation[9] == np.float32(2 / 5)
-    assert held.observation[11] == np.float32(37 / 1280)
-    np.testing.assert_array_equal(flat.observation[:9], held.observation[:9])
+    assert held.observation[11] == np.float32(2 / 5)
+    assert held.observation[13] == np.float32(37 / 1280)
+    np.testing.assert_array_equal(flat.observation[:11], held.observation[:11])
     assert bool(held.action_mask[2]) is True and bool(flat.action_mask[2]) is False

@@ -18,7 +18,12 @@ from friction.friction_model import FrictionModel
 from models.artifact import ArtifactError, ArtifactMetadata, _check_env_compatibility, current_git_sha, load_artifact, load_metadata, make_artifact_id, save_artifact
 from models.rl_agent import RLAgent
 
-OBS_DIM = 13
+PORTFOLIO_STATE_FIELDS = [
+    "units_held_frac", "unrealized_pnl_norm",
+    "holding_duration_norm", "tod_frac", "liquidity_pressure",
+]
+# 모델과 metadata가 같은 소스에서 파생 — 스키마 변경 시 둘이 어긋날 수 없다
+OBS_DIM = len(FeatureEngineer.FEATURE_COLUMNS) + len(PORTFOLIO_STATE_FIELDS)
 
 
 class DummyTradingEnv(gym.Env):
@@ -47,10 +52,34 @@ def built_agent():
     return agent
 
 
-PORTFOLIO_STATE_FIELDS = [
-    "units_held_frac", "unrealized_pnl_norm",
-    "holding_duration_norm", "tod_frac",
-]
+class _WrongDimEnv(DummyTradingEnv):
+    """metadata(OBS_DIM)와 다른 관측 차원의 env — save 시 거부 검증용."""
+
+    DIM = OBS_DIM - 3
+
+    def __init__(self):
+        super().__init__()
+        self.observation_space = spaces.Box(
+            -np.inf, np.inf, shape=(self.DIM,), dtype=np.float32
+        )
+
+    def reset(self, seed=None, options=None):
+        gym.Env.reset(self, seed=seed)
+        self._t = 0
+        return np.zeros(self.DIM, dtype=np.float32), {}
+
+    def step(self, action):
+        self._t += 1
+        return np.zeros(self.DIM, dtype=np.float32), 0.0, self._t >= 5, False, {}
+
+
+def test_save_rejects_model_metadata_dim_mismatch(tmp_path):
+    # 모델 관측 차원 != metadata.observation_dim → 저장 자체가 거부되어야
+    # 불일치 artifact가 round-trip을 통과하는 회귀를 막는다 (PR #18 리뷰 P2).
+    agent = RLAgent(model_kwargs={"seed": 0})
+    agent.build(_WrongDimEnv())
+    with pytest.raises(ArtifactError, match="observation"):
+        save_artifact(agent, make_metadata(), tmp_path)
 
 
 def make_metadata(**overrides) -> ArtifactMetadata:

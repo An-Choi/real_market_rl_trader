@@ -142,11 +142,11 @@ def test_live_window_matches_next_day_recompute_bit_exact(
     """당일 서빙(live)과 익일 backfill 후 재계산(historical)의 observation이
     bit-exact 일치해야 한다 — 아니면 shadow diff가 영원히 값 불일치로 exit 1.
 
-    live: warmup_days=5 → 어제까지 마지막 4개 고유 날짜(parquet) + 당일(KIS stub)
-          = 5개 고유 날짜가 되어야 한다 (재trim 없으면 6개가 되어 EWM feature가
+    live: warmup_days=N → 어제까지 마지막 N−1개 고유 날짜(parquet) + 당일(KIS stub)
+          = N개 고유 날짜가 되어야 한다 (재trim 없으면 N+1개가 되어 EWM feature가
           어긋난다).
     recompute: 당일을 포함한 전체 parquet에서 HistoricalParquetProvider가
-          동일 warmup_days=5로 마지막 5개 고유 날짜를 고른다.
+          동일 warmup_days로 마지막 N개 고유 날짜를 고른다.
     """
     from data.feature_engineer import FeatureEngineer
     from friction.friction_model import FrictionModel
@@ -166,7 +166,9 @@ def test_live_window_matches_next_day_recompute_bit_exact(
         out.mkdir(parents=True, exist_ok=True)
         grp.reset_index(drop=True).to_parquet(out / f"{period}.parquet")
 
-    warmup_days = 5
+    # cross-day warm-up(20거래일)을 지나 feature 행이 나오도록 25일
+    # (fixture 26일 중 당일 제외 25일이 상한)
+    warmup_days = 25
     as_of = pd.Timestamp(f"{today} 10:35:00", tz=TZ)
 
     live_provider = LiveKISProvider(
