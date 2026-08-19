@@ -37,9 +37,23 @@ class ClearAtStepAgent:
         if self.step == 0:
             action = 1
         elif self.step == self.clear_step:
-            action = 2
+            action = 3
         self.step += 1
         return action, None
+
+
+class MaskAwareAgent:
+    def __init__(self) -> None:
+        self.masks: list[np.ndarray] = []
+
+    def predict(self, observation, deterministic=True, *, action_masks=None):
+        self.masks.append(np.asarray(action_masks, dtype=bool).copy())
+        return (1 if len(self.masks) == 1 else 0), None
+
+
+class InvalidFlatBaseline:
+    def predict(self, observation, market_row=None):
+        return 3, None
 
 
 def _data(n_days: int = 3, bars: int = 4, price: float = 100.0) -> pd.DataFrame:
@@ -68,6 +82,20 @@ def test_engine_runs_whole_split_as_single_episode() -> None:
     exec_d = pd.to_datetime(results["timestamp"]).dt.date
     val_d = pd.to_datetime(results["valuation_timestamp"]).dt.date
     assert int((exec_d != val_d).sum()) == 2
+
+
+def test_engine_passes_exact_environment_mask_to_learned_agent() -> None:
+    agent = MaskAwareAgent()
+    engine = BacktestEngine(agent, _env(_data(n_days=1, bars=3)))
+    engine.run(max_steps=1, seed=0)
+    assert len(agent.masks) == 1
+    np.testing.assert_array_equal(agent.masks[0], [True, True, False, False])
+
+
+def test_invalid_rule_baseline_action_is_normalized_to_hold() -> None:
+    engine = BacktestEngine(InvalidFlatBaseline(), _env(_data(n_days=1, bars=3)))
+    results = engine.run(max_steps=1, seed=0)
+    assert results["action"].tolist() == [0]
 
 
 def test_settled_equity_matches_manual_friction_formula() -> None:
@@ -112,3 +140,34 @@ def test_equal_price_fixture_clear_equals_hold_plus_settlement() -> None:
         hold_results["portfolio_value"].iloc[-1] - hold_engine.terminal_liquidation_cost
     )
     assert hold_settled == pytest.approx(clear_final)
+
+
+def test_metrics_terminal_settlement_matches_exec_price_cash_value() -> None:
+    data = _data(n_days=1, bars=4, price=100.0)
+    data.loc[data.index[-1], "Close"] = 110.0
+    data.loc[data.index[-1], "ExecPrice"] = 90.0
+    env = _env(data)
+    engine = BacktestEngine(AddOnceAgent(), env)
+    results = engine.run(seed=0)
+
+    execution_value = env.shares_held * 90.0
+    friction = env.friction_model.calculate_total_friction(
+        trade_value=execution_value,
+        side="sell",
+        liquidity_score=None,
+        price=90.0,
+        trade_date=pd.Timestamp(data["Timestamp"].iloc[-1]).date(),
+    )
+    expected_adjustment = env.shares_held * (110.0 - 90.0) + friction
+    assert engine.terminal_liquidation_cost == pytest.approx(expected_adjustment)
+
+    metrics = summarize_backtest(
+        results,
+        initial_value=engine.reset_info["portfolio_value"],
+        terminal_liquidation_cost=engine.terminal_liquidation_cost,
+    )
+    expected_cash = env.cash + execution_value - friction
+    assert metrics["final_portfolio_value"] == pytest.approx(expected_cash)
+    assert metrics["terminal_settlement_adjustment"] == pytest.approx(
+        expected_adjustment
+    )

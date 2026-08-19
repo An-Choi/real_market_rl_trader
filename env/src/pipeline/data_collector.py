@@ -10,6 +10,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from data.defect_days import (
+    DEFAULT_MAX_GAP_MINUTES,
+    DEFAULT_MIN_COVERAGE,
+    TradingDayQuality,
+    classify_trading_day,
+    sanitize_minute_rows,
+)
+
 
 def _month_end(day: date) -> date:
     """Return the last day of the month containing the given date."""
@@ -92,6 +100,8 @@ class DataCollector:
     """Collect raw OHLCV data and save to Parquet partitions."""
 
     raw_data_dir: Path
+    min_day_coverage: float = DEFAULT_MIN_COVERAGE
+    max_day_gap_minutes: int = DEFAULT_MAX_GAP_MINUTES
 
     def fetch_kis_daily(self, fetcher, start: date, end: date) -> pd.DataFrame:
         return fetcher.fetch_daily(start=start, end=end)
@@ -111,6 +121,14 @@ class DataCollector:
         partition: str,
     ) -> Path:
         """Save OHLCV to data/raw/<symbol>/<interval>/<partition>.parquet (snappy)."""
+        if interval == "1m":
+            data = sanitize_minute_rows(data)
+            row_partitions = data["Timestamp"].dt.strftime("%Y-%m")
+            mismatched = sorted(set(row_partitions).difference({partition}))
+            if mismatched:
+                raise ValueError(
+                    f"minute partition {partition!r} contains rows for {mismatched}"
+                )
         directory = self.raw_data_dir / symbol / interval
         directory.mkdir(parents=True, exist_ok=True)
         output_path = directory / f"{partition}.parquet"
@@ -278,6 +296,40 @@ class DataCollector:
                 results[label] = "kept_existing" if preserved else "unchanged"
         return results
 
+    def audit_minute_quality(
+        self,
+        symbol: str,
+        today: date | None = None,
+        interval: str = "1m",
+    ) -> list[TradingDayQuality]:
+        """Return the shared structured quality result for every saved day."""
+        today = today or date.today()
+        directory = self.raw_data_dir / symbol / interval
+        results: list[TradingDayQuality] = []
+        for path in sorted(directory.glob("*.parquet")):
+            frame = pd.read_parquet(path, engine="pyarrow")
+            if "Timestamp" not in frame:
+                results.append(classify_trading_day(frame))
+                continue
+            timestamps = pd.to_datetime(frame["Timestamp"], errors="coerce")
+            valid_timestamp = timestamps.notna()
+            if (~valid_timestamp).any():
+                results.append(classify_trading_day(frame[~valid_timestamp]))
+            for trading_day, group in frame[valid_timestamp].groupby(
+                timestamps[valid_timestamp].dt.date
+            ):
+                results.append(
+                    classify_trading_day(
+                        group,
+                        min_coverage=self.min_day_coverage,
+                        max_gap_minutes=self.max_day_gap_minutes,
+                        # Today's still-forming session is checked only through
+                        # its latest bar; historical sessions must reach close.
+                        require_complete_session=trading_day < today,
+                    )
+                )
+        return sorted(results, key=lambda result: result.trading_date or date.min)
+
     def audit_minute_coverage(self, symbol: str, today: date | None = None, interval: str = "1m") -> list[str]:
         """Scan saved 1m partitions for coverage holes.
 
@@ -294,6 +346,9 @@ class DataCollector:
                 pd.read_parquet(directory / f"{label}.parquet", columns=["Timestamp"])
                 ["Timestamp"].dt.date.unique()
             )
+            if not days:
+                warnings.append(f"{label}: empty partition")
+                continue
             month_start = date(int(label[:4]), int(label[5:7]), 1)
             # 첫 파티션은 rolling 수집 시작점이라 월 중간 시작이 정상이다.
             window_start = days[0] if index == 0 else month_start
@@ -311,4 +366,15 @@ class DataCollector:
             }
             for missing in sorted(expected.difference(labels)):
                 warnings.append(f"{missing}: partition file missing")
+        for quality in self.audit_minute_quality(symbol, today=today, interval=interval):
+            if quality.is_valid:
+                continue
+            label = quality.trading_date.isoformat() if quality.trading_date else "unknown-day"
+            warnings.append(
+                f"{label}: invalid minute day "
+                f"(reasons={','.join(quality.reasons)}, "
+                f"coverage={quality.coverage_ratio:.3f}, "
+                f"max_gap_minutes={quality.max_gap_minutes}, "
+                f"observed={quality.observed_rows}/{quality.expected_rows})"
+            )
         return warnings

@@ -77,7 +77,7 @@ def test_callback_records_requested_trading_metrics() -> None:
             units_held=0,
             forced_clear=True,
         )],
-        "actions": [2],
+        "actions": [3],
         "rewards": [0.4],
         "dones": [True],
     }

@@ -19,6 +19,27 @@ def _minute_df_days(year: int, month: int, days: list[int]) -> pd.DataFrame:
                          "Volume": [1] * n, "TradingValue": [1] * n})
 
 
+def _complete_minute_df_days(year: int, month: int, days: list[int]) -> pd.DataFrame:
+    frames = []
+    for day in days:
+        timestamps = pd.date_range(
+            f"{year:04d}-{month:02d}-{day:02d} 09:00",
+            periods=380,
+            freq="1min",
+            tz="Asia/Seoul",
+        )
+        frames.append(pd.DataFrame({
+            "Timestamp": timestamps,
+            "Open": 1.0,
+            "High": 1.0,
+            "Low": 1.0,
+            "Close": 1.0,
+            "Volume": 1,
+            "TradingValue": range(1, len(timestamps) + 1),
+        }))
+    return pd.concat(frames, ignore_index=True)
+
+
 @pytest.fixture
 def sample_daily() -> pd.DataFrame:
     return pd.DataFrame({
@@ -400,12 +421,39 @@ def test_audit_minute_coverage_clean_data_is_silent(tmp_path: Path) -> None:
     d = tmp_path / "005930" / "1m"
     d.mkdir(parents=True)
     # 첫 파티션은 rolling 시작이라 월 중간 시작이 정상
-    _minute_df_days(2026, 5, list(range(20, 32))).to_parquet(d / "2026-05.parquet", index=False)
-    _minute_df_days(2026, 6, list(range(1, 31))).to_parquet(d / "2026-06.parquet", index=False)
-    _minute_df_days(2026, 7, list(range(1, 20))).to_parquet(d / "2026-07.parquet", index=False)
+    _complete_minute_df_days(2026, 5, list(range(20, 32))).to_parquet(
+        d / "2026-05.parquet", index=False
+    )
+    _complete_minute_df_days(2026, 6, list(range(1, 31))).to_parquet(
+        d / "2026-06.parquet", index=False
+    )
+    _complete_minute_df_days(2026, 7, list(range(1, 20))).to_parquet(
+        d / "2026-07.parquet", index=False
+    )
     collector = DataCollector(raw_data_dir=tmp_path)
 
     assert collector.audit_minute_coverage(symbol="005930", today=date(2026, 7, 21)) == []
+
+
+def test_audit_reports_same_large_gap_reason_as_day_classifier(tmp_path: Path) -> None:
+    from data.defect_days import classify_trading_day
+
+    directory = tmp_path / "005930" / "1m"
+    directory.mkdir(parents=True)
+    day = _complete_minute_df_days(2026, 7, [20])
+    timestamps = pd.to_datetime(day["Timestamp"])
+    day = day[~timestamps.dt.strftime("%H:%M").between("11:00", "11:29")]
+    day.to_parquet(directory / "2026-07.parquet", index=False)
+    collector = DataCollector(raw_data_dir=tmp_path)
+
+    direct = classify_trading_day(day, require_complete_session=True)
+    structured = collector.audit_minute_quality("005930", today=date(2026, 7, 21))
+    warnings = collector.audit_minute_coverage("005930", today=date(2026, 7, 21))
+
+    assert len(structured) == 1
+    assert structured[0].reasons == direct.reasons
+    assert structured[0].coverage_ratio == direct.coverage_ratio
+    assert any("2026-07-20" in warning and "gap_exceeds_limit" in warning for warning in warnings)
 
 
 def test_backfill_minute_monthly_unchanged_refetch_not_reported(tmp_path: Path) -> None:

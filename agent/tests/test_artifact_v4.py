@@ -190,7 +190,8 @@ def _metadata_kwargs(**overrides):
 
 def test_make_training_metadata_measures_per_symbol_from_data():
     meta = make_training_metadata(**_metadata_kwargs())
-    assert meta.artifact_format_version == 4
+    assert meta.artifact_format_version == 5
+    assert meta.deployment_status == "research"
     assert meta.train_data["per_symbol"]["BBB"] == {
         "start": "2026-01-05", "end": "2026-01-14", "trading_days": 10,
     }

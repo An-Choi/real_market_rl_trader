@@ -33,7 +33,7 @@ class DailyMetrics:
     exposures: list[float] = field(default_factory=list)
     friction_sum: float = 0.0
     action_counts: np.ndarray = field(
-        default_factory=lambda: np.zeros(3, dtype=np.int64)
+        default_factory=lambda: np.zeros(4, dtype=np.int64)
     )
     forced_clear_count: int = 0
     shaped_rewards: list[float] = field(default_factory=list)
@@ -53,7 +53,7 @@ class TradingMetricsTensorBoardCallback(BaseCallback):
         self._benchmark_factor = 1.0
         self._episode_strategy_factors: dict[int, float] = defaultdict(lambda: 1.0)
         self._episode_benchmark_factors: dict[int, float] = defaultdict(lambda: 1.0)
-        self._total_action_counts = np.zeros(3, dtype=np.int64)
+        self._total_action_counts = np.zeros(4, dtype=np.int64)
         self._total_forced_clears = 0
         self._daily_states: dict[int, DailyMetrics] = {}
         self._reset_rollout_metrics()
@@ -66,7 +66,7 @@ class TradingMetricsTensorBoardCallback(BaseCallback):
         self._reward_terms: dict[str, list[float]] = {
             key: [] for key in REWARD_INFO_KEYS
         }
-        self._rollout_action_counts = np.zeros(3, dtype=np.int64)
+        self._rollout_action_counts = np.zeros(4, dtype=np.int64)
         self._rollout_forced_clears = 0
         self._completed_episode_returns: list[float] = []
         self._completed_benchmark_returns: list[float] = []
@@ -84,7 +84,7 @@ class TradingMetricsTensorBoardCallback(BaseCallback):
             action: int | None = None
             if env_idx < len(actions):
                 action = int(actions[env_idx])
-                if 0 <= action < 3:
+                if 0 <= action < 4:
                     self._rollout_action_counts[action] += 1
                     self._total_action_counts[action] += 1
             if env_idx < len(rewards):
@@ -156,7 +156,7 @@ class TradingMetricsTensorBoardCallback(BaseCallback):
             execution_state = self._new_daily_state(execution_date)
             self._daily_states[env_idx] = execution_state
 
-        if action is not None and 0 <= action < 3:
+        if action is not None and 0 <= action < 4:
             execution_state.action_counts[action] += 1
         execution_state.friction_sum += float(info.get("friction_cost", 0.0))
         if bool(info.get("forced_clear", False)):
@@ -208,7 +208,7 @@ class TradingMetricsTensorBoardCallback(BaseCallback):
 
         action_total = int(state.action_counts.sum())
         if action_total:
-            for action, label in enumerate(("hold", "add", "clear")):
+            for action, label in enumerate(("hold", "add", "reduce", "clear")):
                 self._record(
                     f"daily/{label}_rate",
                     state.action_counts[action] / action_total,
@@ -250,7 +250,7 @@ class TradingMetricsTensorBoardCallback(BaseCallback):
 
         rollout_actions = int(self._rollout_action_counts.sum())
         total_actions = int(self._total_action_counts.sum())
-        for action, label in enumerate(("hold", "add", "clear")):
+        for action, label in enumerate(("hold", "add", "reduce", "clear")):
             if rollout_actions:
                 self._record(
                     f"actions/{label}_rate",

@@ -22,8 +22,8 @@ import pandas as pd
 
 from models.walk_forward import SplitBoundaries
 
-SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4)
-SERVING_FORMAT_VERSIONS = frozenset({3, 4})  # 서버 수용 버전 (env params 계약 동일)
+SUPPORTED_FORMAT_VERSIONS = (1, 2, 3, 4, 5)
+SERVING_FORMAT_VERSIONS = frozenset({3, 4, 5})
 KNOWN_ACTION_TYPES = ("discrete",)
 KNOWN_NORMALIZATION_TYPES = ("sb3_vecnormalize", "feature_standardization")
 FRICTION_RATE_FIELDS = (
@@ -57,13 +57,21 @@ REQUIRED_ENV_PARAMS_BY_VERSION = {
         "duration_horizon_bars",
         "nominal_bars_per_day",
     ),
+    5: (
+        "unit_fraction",
+        "max_units",
+        "initial_cash",
+        "episode_days",
+        "duration_horizon_bars",
+        "nominal_bars_per_day",
+    ),
 }
 # v1 alias — 기존 테스트/외부 참조 호환
 REQUIRED_ENV_PARAMS = REQUIRED_ENV_PARAMS_BY_VERSION[1]
 POSITIVE_INT_ENV_PARAMS = ("episode_days", "duration_horizon_bars", "nominal_bars_per_day")
 LEGACY_SEMANTICS_MAX_VERSION = 1  # v1 = 당일 기준 holding_duration_norm으로 학습됨
 # trading_env의 ACTION_HOLD=0 / ACTION_ADD=1 / ACTION_CLEAR=2와 순서 고정 계약
-EXPECTED_ACTION_LABELS = ["hold", "add_unit", "clear"]
+EXPECTED_ACTION_LABELS = ["hold", "add_unit", "reduce_unit", "clear"]
 METADATA_FILENAME = "metadata.json"
 MODEL_FILENAME = "model.zip"
 DEFAULT_PORTFOLIO_STATE_FIELDS = [
@@ -125,6 +133,9 @@ class ArtifactMetadata:
     env_params: dict[str, Any]
     friction_params: dict[str, Any] | None = None
     training_params: dict[str, Any] = field(default_factory=dict)
+    # v5 makes research/rejected artifacts distinguishable from explicitly
+    # promoted production candidates.  Older formats retain "legacy".
+    deployment_status: str = "legacy"
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -236,6 +247,13 @@ class ArtifactMetadata:
             raise ArtifactError("training_params must be a dict")
         if self.artifact_format_version >= 4:
             self._validate_v4_train_data()
+        if self.artifact_format_version >= 5:
+            allowed_statuses = {"approved", "rejected", "research"}
+            if self.deployment_status not in allowed_statuses:
+                raise ArtifactError(
+                    "format v5 deployment_status must be one of "
+                    f"{sorted(allowed_statuses)}: {self.deployment_status!r}"
+                )
 
     def _validate_v4_train_data(self) -> None:
         td = self.train_data
@@ -335,8 +353,9 @@ def make_training_metadata(
     portfolio_state_fields: list[str] | None = None,
     normalization: dict[str, Any] | None = None,
     training_params: dict[str, Any] | None = None,
+    deployment_status: str = "research",
 ) -> ArtifactMetadata:
-    """Build versioned artifact metadata from a completed training run (format v4)."""
+    """Build versioned artifact metadata from a completed training run (format v5)."""
     portfolio_fields = portfolio_state_fields or list(DEFAULT_PORTFOLIO_STATE_FIELDS)
     if set(featured_data_by_symbol) != set(symbols):
         raise ArtifactError(
@@ -358,7 +377,7 @@ def make_training_metadata(
     global_end = max(entry["end"] for entry in per_symbol.values())
 
     meta = ArtifactMetadata(
-        artifact_format_version=4,
+        artifact_format_version=5,
         artifact_id=make_artifact_id(agent.model_name, feature_schema_version, len(symbols)),
         created_at=datetime.now(timezone.utc).isoformat(),
         algo=agent.model_name,
@@ -367,7 +386,11 @@ def make_training_metadata(
         feature_columns=list(feature_columns),
         portfolio_state_fields=portfolio_fields,
         observation_dim=len(feature_columns) + len(portfolio_fields),
-        action_space={"type": "discrete", "n": 3, "labels": list(EXPECTED_ACTION_LABELS)},
+        action_space={
+            "type": "discrete",
+            "n": len(EXPECTED_ACTION_LABELS),
+            "labels": list(EXPECTED_ACTION_LABELS),
+        },
         normalization=normalization,
         train_git_sha=current_git_sha(),
         train_data={
@@ -381,6 +404,7 @@ def make_training_metadata(
         env_params=env_params,
         friction_params=dict(friction_params),
         training_params=dict(training_params or {}),
+        deployment_status=deployment_status,
     )
     meta.validate()  # 저장 경로 진입 전 실측 기반 fail-closed (§8.1b)
     return meta

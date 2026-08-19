@@ -65,6 +65,19 @@ class FeatureEngineer:
         "trend_strength_30m", "macd_hist_30m", "vol_regime_30m",
         "gap_open", "relative_volume_tod",
     )
+    FEATURE_DESCRIPTIONS: dict[str, str] = {
+        "log_ret_1": "5-minute close log return over 1 bar",
+        "log_ret_3": "5-minute close log return over 3 bars",
+        "log_ret_12": "5-minute close log return over 12 bars",
+        "realized_vol_12": "rolling standard deviation of 1-bar returns over 12 bars",
+        "relative_volume": "current volume divided by trailing 12-bar mean volume",
+        "vwap_dev": "close deviation from same-day cumulative VWAP",
+        "trend_strength_30m": "sum of six completed 30-minute log returns",
+        "macd_hist_30m": "normalized 30-minute MACD histogram",
+        "vol_regime_30m": "short/long 30-minute realized-volatility ratio",
+        "gap_open": "today's first 5-minute open relative to the prior close",
+        "relative_volume_tod": "volume relative to the prior 20 days at the same time slot",
+    }
 
     def transform(self, minute_df: pd.DataFrame, ts_col: str = "Timestamp") -> pd.DataFrame:
         """1분봉(멀티데이) → 5분 그리드 [Timestamp, Close, ExecPrice, Adv20, <FEATURE_COLUMNS>].

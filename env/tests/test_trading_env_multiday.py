@@ -131,14 +131,17 @@ def test_reset_info_has_initial_market_price() -> None:
 def test_action_masks_remove_duplicate_no_op_actions() -> None:
     env = make_env(_days(2, bars_per_day=8), episode_days=2)
     env.reset(seed=0)
-    assert env.action_masks().tolist() == [True, True, False]
+    assert env.action_masks().tolist() == [True, True, False, False]
 
     for _ in range(env.max_units):
         env.step(1)
-    assert env.action_masks().tolist() == [True, False, True]
+    assert env.action_masks().tolist() == [True, False, True, True]
 
+    units_before_reduce = env.units_held
     env.step(2)
-    assert env.action_masks().tolist() == [True, True, False]
+    assert env.units_held == units_before_reduce - 1
+    env.step(3)
+    assert env.action_masks().tolist() == [True, True, False, False]
 
 
 def _two_day_gap_data() -> pd.DataFrame:

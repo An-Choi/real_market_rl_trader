@@ -13,6 +13,7 @@ from models.normalization import FeatureNormalizer
 from models.training import (
     build_training_environment,
     build_vec_training_environment,
+    resolve_training_feature_columns,
     train_ppo_artifact,
 )
 
@@ -74,7 +75,7 @@ def test_vec_env_has_one_sub_env_per_symbol_and_forwards_masks():
     vec_env.reset()
     masks = vec_env.env_method("action_masks")
     assert len(masks) == 2
-    assert all(np.asarray(m).shape == (3,) for m in masks)
+    assert all(np.asarray(m).shape == (4,) for m in masks)
 
 
 def test_normalizer_fit_uses_pooled_statistics():
@@ -86,6 +87,44 @@ def test_normalizer_fit_uses_pooled_statistics():
     # to_dict = {"feature_columns", "means", "scales", "clip"} (normalization.py 계약)
     assert pooled.to_dict()["means"] != single.to_dict()["means"]  # 한 종목 fit과 달라야 함
     assert pooled.to_dict()["means"][0] == pytest.approx(float(combined[cols[0]].mean()))
+
+
+def test_feature_subset_changes_observation_and_artifact_contract(tmp_path):
+    selected = [
+        column for column in FeatureEngineer.FEATURE_COLUMNS
+        if column not in {"relative_volume", "macd_hist_30m"}
+    ]
+    data = {"AAA": _features(1), "BBB": _features(2)}
+    env = build_training_environment(
+        featured_data=data["AAA"],
+        environment_config=ENV_CFG,
+        friction_config=FRICTION_CFG,
+        feature_columns=selected,
+    )
+    observation, _ = env.reset(seed=0)
+    assert observation.shape == (len(selected) + 5,)
+
+    artifact_dir = train_ppo_artifact(
+        featured_data=data,
+        validation_data=None,
+        config=_config(),
+        total_timesteps=32,
+        seed=7,
+        artifacts_dir=tmp_path,
+        trained_split="train",
+        split_boundaries=dict(BOUNDARIES),
+        feature_columns=selected,
+    )
+    meta = json.loads((artifact_dir / "metadata.json").read_text())
+    assert meta["feature_columns"] == selected
+    load_artifact(artifact_dir, env=env)
+
+
+def test_feature_subset_rejects_unknown_or_reordered_columns():
+    with pytest.raises(ValueError, match="unknown"):
+        resolve_training_feature_columns(["not_a_feature"])
+    with pytest.raises(ValueError, match="preserve"):
+        resolve_training_feature_columns(list(reversed(FeatureEngineer.FEATURE_COLUMNS)))
 
 
 def test_train_ppo_artifact_multi_symbol_smoke(tmp_path):
@@ -102,7 +141,8 @@ def test_train_ppo_artifact_multi_symbol_smoke(tmp_path):
     )
     assert (artifact_dir / "metadata.json").is_file()
     meta = json.loads((artifact_dir / "metadata.json").read_text())
-    assert meta["artifact_format_version"] == 4
+    assert meta["artifact_format_version"] == 5
+    assert meta["deployment_status"] == "research"
     assert meta["train_data"]["symbols"] == ["AAA", "BBB"]
     assert meta["train_data"]["split_boundaries"] == BOUNDARIES
     assert "-s2-" in meta["artifact_id"]

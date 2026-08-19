@@ -18,6 +18,31 @@ def adv_value_from_row(row: pd.Series) -> float | None:
     return float(raw)
 
 
+def liquidity_score_from_adv(
+    adv_value: float | None, order_notional: float
+) -> float | None:
+    """Convert order participation into a bounded execution-liquidity score."""
+    if adv_value is None or not np.isfinite(adv_value) or adv_value <= 0:
+        return None
+    if not np.isfinite(order_notional) or order_notional <= 0:
+        return None
+    participation = order_notional / adv_value
+    return float(np.clip(0.001 / max(participation, 1e-9), 0.05, 1.0))
+
+
+def whole_share_trade_value(unit_notional: float, price: float) -> float:
+    """Return the executable notional after rounding a buy down to whole shares."""
+    if (
+        not np.isfinite(unit_notional)
+        or unit_notional <= 0
+        or not np.isfinite(price)
+        or price <= 0
+    ):
+        return 0.0
+    shares = int(unit_notional // price)
+    return float(shares * price)
+
+
 def extract_feature_vector(row: pd.Series, feature_columns: list[str]) -> np.ndarray:
     return (
         pd.to_numeric(row[feature_columns], errors="coerce")
@@ -39,10 +64,12 @@ def build_portfolio_state(
     step_in_day: int,
     nominal_bars_per_day: int,
     adv_value: float | None,
+    cost_basis: float | None = None,
 ) -> np.ndarray:
     units_held_frac = units_held / max(max_units, 1)
     held_value = shares_held * price
-    cost_basis = units_held * initial_cash * unit_fraction
+    if cost_basis is None:
+        cost_basis = units_held * initial_cash * unit_fraction
     unrealized_pnl_norm = (held_value - cost_basis) / max(initial_cash, 1e-9)
     if units_held > 0 and bars_since_entry is not None:
         holding_duration_norm = min(bars_since_entry / duration_horizon_bars, 1.0)
@@ -76,14 +103,17 @@ def can_afford_add(
     liquidity_score: float | None = None,
 ) -> bool:
     unit_notional = initial_cash * unit_fraction
+    trade_value = whole_share_trade_value(unit_notional, price)
+    if trade_value <= 0:
+        return False
     buy_friction = friction_model.calculate_total_friction(
-        trade_value=unit_notional,
+        trade_value=trade_value,
         side="buy",
         liquidity_score=liquidity_score,
         price=price,
         trade_date=trade_date,
     )
-    return cash >= unit_notional + buy_friction
+    return cash >= trade_value + buy_friction
 
 
 def compute_action_mask(
@@ -111,6 +141,7 @@ def compute_action_mask(
                 trade_date=trade_date,
                 liquidity_score=liquidity_score,
             ),
+            units_held > 0,
             units_held > 0,
         ],
         dtype=bool,

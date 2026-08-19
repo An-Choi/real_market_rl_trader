@@ -95,10 +95,25 @@ def test_can_afford_add_gates_on_notional_plus_friction():
                              execution_uncertainty_rate=0.0, sell_tax_rate=0.0,
                              dynamic_spread=False, date_based_sell_tax=False)
     kwargs = dict(initial_cash=10_000.0, unit_fraction=0.2, friction_model=friction,
-                  price=300_000.0, trade_date=pd.Timestamp("2026-07-01").date())
+                  price=100.0, trade_date=pd.Timestamp("2026-07-01").date())
     # notional 2000 + fee 200 = 2200
     assert can_afford_add(cash=2200.0, **kwargs) is True
     assert can_afford_add(cash=2199.99, **kwargs) is False
+
+
+def test_can_afford_add_rejects_zero_share_order() -> None:
+    friction = FrictionModel(
+        fee_rate=0.0, spread_rate=0.0, slippage_rate=0.0,
+        execution_uncertainty_rate=0.0, sell_tax_rate=0.0,
+    )
+    assert can_afford_add(
+        cash=10_000.0,
+        initial_cash=10_000.0,
+        unit_fraction=0.2,
+        friction_model=friction,
+        price=300_000.0,
+        trade_date=pd.Timestamp("2026-07-01").date(),
+    ) is False
 
 
 def test_action_mask_layout():
@@ -106,14 +121,18 @@ def test_action_mask_layout():
                              execution_uncertainty_rate=0.0, sell_tax_rate=0.0,
                              dynamic_spread=False, date_based_sell_tax=False)
     common = dict(max_units=5, initial_cash=10_000.0, unit_fraction=0.2,
-                  friction_model=friction, price=300_000.0,
+                  friction_model=friction, price=100.0,
                   trade_date=pd.Timestamp("2026-07-01").date())
     flat = compute_action_mask(units_held=0, cash=10_000.0, **common)
-    np.testing.assert_array_equal(flat, [True, True, False])
+    np.testing.assert_array_equal(flat, [True, True, False, False])
     maxed = compute_action_mask(units_held=5, cash=10_000.0, **common)
-    np.testing.assert_array_equal(maxed, [True, False, True])
+    np.testing.assert_array_equal(maxed, [True, False, True, True])
     broke = compute_action_mask(units_held=1, cash=0.0, **common)
-    np.testing.assert_array_equal(broke, [True, False, True])
+    np.testing.assert_array_equal(broke, [True, False, True, True])
+    too_expensive = compute_action_mask(
+        units_held=0, cash=10_000.0, **{**common, "price": 300_000.0}
+    )
+    np.testing.assert_array_equal(too_expensive, [True, False, False, False])
 
 
 def test_extract_and_assemble_dtypes():

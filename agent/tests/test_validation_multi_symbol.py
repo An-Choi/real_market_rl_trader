@@ -5,7 +5,11 @@ from unittest.mock import patch
 
 import pytest
 
-from models.validation import FullSplitValidationCallback, ValidationSnapshot
+from models.validation import (
+    FullSplitValidationCallback,
+    ValidationSnapshot,
+    summarize_validation_snapshots,
+)
 
 
 def _snapshot(total_return: float, timestep: int = 0) -> ValidationSnapshot:
@@ -84,3 +88,97 @@ def test_logger_records_per_symbol_and_mean():
 def test_rejects_empty_env_dict():
     with pytest.raises(ValueError):
         FullSplitValidationCallback({}, eval_freq=100, use_action_masks=False)
+
+
+def test_robust_selection_penalizes_bad_worst_window_and_drawdown():
+    snapshots = {
+        "strong": _snapshot(0.10),
+        "weak": _snapshot(-0.04),
+    }
+    metrics = summarize_validation_snapshots(
+        snapshots,
+        selection={
+            "metric": "robust_return",
+            "weights": {
+                "median_return": 1.0,
+                "worst_return": 0.5,
+                "max_drawdown": 0.5,
+            },
+            "minimum_worst_return": -0.02,
+        },
+    )
+    assert metrics["selection_score"] == pytest.approx(-0.04)
+    assert metrics["qualified"] is False
+
+
+def test_cash_only_policy_does_not_qualify():
+    cash = ValidationSnapshot(
+        timestep=0, total_return=0.0, final_portfolio_value=10_000.0,
+        max_drawdown=0.0, turnover=0.0, trade_count=0,
+        hold_action_rate=1.0, add_action_rate=0.0, clear_action_rate=0.0,
+    )
+    metrics = summarize_validation_snapshots(
+        {"AAA/window": cash},
+        selection={"maximum_hold_action_rate": 0.995},
+    )
+    assert metrics["selection_score"] == 0.0
+    assert metrics["qualified"] is False
+
+
+def test_checkpoint_selection_prefers_qualified_over_higher_rejected_score():
+    cb = FullSplitValidationCallback(
+        {"AAA": object()},
+        eval_freq=100,
+        use_action_masks=False,
+        verbose=0,
+        selection={"maximum_hold_action_rate": 0.9},
+    )
+    parameter_values = iter([{"w": "rejected"}, {"w": "qualified"}])
+    restored = []
+    cb.model = type("M", (), {
+        "get_parameters": lambda self: next(parameter_values),
+        "set_parameters": lambda self, params, exact_match=True: restored.append(params),
+    })()
+    cb._record_value = lambda *args: None
+    cb.num_timesteps = 0
+    rejected = ValidationSnapshot(
+        0, 0.20, 12_000.0, -0.01, 0.0, 0, 1.0, 0.0, 0.0
+    )
+    qualified = ValidationSnapshot(
+        100, 0.05, 10_500.0, -0.02, 0.5, 2, 0.8, 0.1, 0.1
+    )
+    with patch.object(
+        FullSplitValidationCallback,
+        "_run_all_splits",
+        side_effect=[{"AAA": rejected}, {"AAA": qualified}],
+    ):
+        cb._evaluate_and_maybe_update()
+        cb.num_timesteps = 100
+        cb._evaluate_and_maybe_update()
+    assert cb.best_score == pytest.approx(0.05)
+    assert cb.best_candidate_score == pytest.approx(0.20)
+    assert cb.summary()["best"]["qualified"] is True
+
+
+def test_all_rejected_has_no_qualified_best_but_keeps_diagnostic_candidate():
+    cb = FullSplitValidationCallback(
+        {"AAA": object()}, eval_freq=100, use_action_masks=False,
+        selection={"maximum_window_hold_action_rate": 0.9},
+    )
+    cb.model = type("M", (), {
+        "get_parameters": lambda self: {"w": 1},
+        "set_parameters": lambda self, params, exact_match=True: None,
+    })()
+    cb._record_value = lambda *args: None
+    cb.num_timesteps = 0
+    cash = ValidationSnapshot(
+        0, 0.0, 10_000.0, 0.0, 0.0, 0, 1.0, 0.0, 0.0
+    )
+    with patch.object(
+        FullSplitValidationCallback, "_run_all_splits", return_value={"AAA": cash}
+    ):
+        cb._evaluate_and_maybe_update()
+    summary = cb.summary()
+    assert summary["best"] is None
+    assert summary["qualified_checkpoint_found"] is False
+    assert summary["best_candidate"]["qualified"] is False

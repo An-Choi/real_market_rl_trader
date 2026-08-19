@@ -7,10 +7,29 @@ import pandas as pd
 import pytest
 
 from models.walk_forward import (
+    align_data_on_common_days,
+    build_expanding_walk_forward_folds,
     SplitBoundaries,
     compute_split_boundaries,
+    slice_walk_forward_fold,
     split_by_trading_day,
+    split_into_day_windows,
 )
+
+
+def test_align_data_uses_intersection_calendar() -> None:
+    data = {
+        "AAA": _frame("2026-01-01", 5),
+        "BBB": _frame("2026-01-03", 5),
+    }
+    aligned = align_data_on_common_days(data)
+    for frame in aligned.values():
+        days = pd.to_datetime(frame["Timestamp"]).dt.date.unique().tolist()
+        assert days == [
+            datetime.date(2026, 1, 3),
+            datetime.date(2026, 1, 4),
+            datetime.date(2026, 1, 5),
+        ]
 
 
 def _frame(start: str, days: int, bars_per_day: int = 3) -> pd.DataFrame:
@@ -114,3 +133,51 @@ def test_ratio_path_unchanged_without_boundaries():
     df = _frame("2026-01-01", 10)
     legacy = split_by_trading_day(df, split="train")
     assert pd.to_datetime(legacy["Timestamp"]).dt.date.nunique() == 7  # int(10*0.7)
+
+
+def test_day_windows_are_chronological_and_merge_short_tail():
+    windows = split_into_day_windows(
+        _frame("2026-01-01", 12), window_days=5, min_window_days=3
+    )
+    assert list(windows) == [
+        "2026-01-01..2026-01-05",
+        "2026-01-06..2026-01-12",
+    ]
+    assert [
+        pd.to_datetime(frame["Timestamp"]).dt.date.nunique()
+        for frame in windows.values()
+    ] == [5, 7]
+
+
+def test_expanding_folds_have_forward_non_overlapping_tests():
+    data = {"AAA": _frame("2026-01-01", 100)}
+    folds = build_expanding_walk_forward_folds(
+        data, n_folds=3, validation_days=10, test_days=10, purge_days=2
+    )
+    assert len(folds) == 3
+    assert folds[0].train_end < folds[0].validation_start < folds[0].test_start
+    assert folds[0].test_end < folds[1].test_start
+    assert folds[-1].test_end == datetime.date(2026, 4, 10)
+    assert [
+        pd.to_datetime(
+            slice_walk_forward_fold(data["AAA"], fold, segment="test")["Timestamp"]
+        ).dt.date.nunique()
+        for fold in folds
+    ] == [10, 10, 10]
+
+
+def test_reference_calendar_keeps_boundaries_stable_when_symbol_has_gaps():
+    complete = _frame("2026-01-01", 100)
+    reference = sorted(pd.to_datetime(complete["Timestamp"]).dt.date.unique())
+    gappy = complete.loc[
+        ~pd.to_datetime(complete["Timestamp"]).dt.day.isin([20, 21, 22])
+    ].reset_index(drop=True)
+    first = build_expanding_walk_forward_folds(
+        {"AAA": complete}, n_folds=3, validation_days=10, test_days=10,
+        purge_days=2, reference_days=reference,
+    )
+    second = build_expanding_walk_forward_folds(
+        {"AAA": complete, "BBB": gappy}, n_folds=3, validation_days=10,
+        test_days=10, purge_days=2, reference_days=reference,
+    )
+    assert [fold.to_dict() for fold in second] == [fold.to_dict() for fold in first]

@@ -23,6 +23,8 @@ from env.observation import (
     build_portfolio_state,
     compute_action_mask,
     extract_feature_vector,
+    liquidity_score_from_adv,
+    whole_share_trade_value,
 )
 from errors import InsufficientHistoryError, StaleDataError
 
@@ -47,6 +49,8 @@ def build_decision_inputs(
     friction_model,
     max_bar_age: pd.Timedelta,
     feature_engineer,
+    cost_basis: float | None = None,
+    feature_columns: list[str] | tuple[str, ...] | None = None,
 ) -> DecisionInputs:
     # defense-in-depth: 완료 분봉 cutoff를 transform 입력 단계에서 재적용
     ts = pd.to_datetime(bars_1m["Timestamp"])
@@ -96,8 +100,16 @@ def build_decision_inputs(
         step_in_day=step_in_day,
         nominal_bars_per_day=int(env_params["nominal_bars_per_day"]),
         adv_value=adv_value_from_row(row),
+        cost_basis=cost_basis,
     )
-    features = extract_feature_vector(row, list(feature_engineer.FEATURE_COLUMNS))
+    selected_features = list(
+        feature_engineer.FEATURE_COLUMNS if feature_columns is None else feature_columns
+    )
+    features = extract_feature_vector(row, selected_features)
+    add_unit_notional = (
+        float(env_params["initial_cash"]) * float(env_params["unit_fraction"])
+    )
+    executable_add_notional = whole_share_trade_value(add_unit_notional, price)
     action_mask = compute_action_mask(
         units_held=units_held,
         max_units=int(env_params["max_units"]),
@@ -107,7 +119,10 @@ def build_decision_inputs(
         friction_model=friction_model,
         price=price,
         trade_date=bar_ts.date(),
-        liquidity_score=None,  # featured 데이터에 liquidity_score 없음 — env와 동일 경로
+        liquidity_score=liquidity_score_from_adv(
+            adv_value_from_row(row),
+            executable_add_notional,
+        ),
     )
     return DecisionInputs(
         observation=assemble_observation(features, portfolio_state),

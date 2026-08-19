@@ -128,6 +128,14 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
         if request.portfolio.units_held > max_units:
             raise RequestValidationFailure(
                 f"units_held {request.portfolio.units_held} > artifact max_units {max_units}")
+        if (
+            predictor.meta.artifact_format_version >= 5
+            and request.portfolio.units_held > 0
+            and request.portfolio.cost_basis is None
+        ):
+            raise RequestValidationFailure(
+                "cost_basis is required for held positions with artifact format v5+"
+            )
         if request.as_of is not None:
             as_of = pd.Timestamp(request.as_of)
             if as_of.tzinfo is None:
@@ -148,6 +156,8 @@ def create_app(config: ServingConfig, predictor, provider) -> FastAPI:
             friction_model=predictor.friction_model,
             max_bar_age=max_bar_age,
             feature_engineer=feature_engineer,
+            cost_basis=request.portfolio.cost_basis,
+            feature_columns=list(predictor.meta.feature_columns),
         )
         try:
             action = predictor.predict(result.observation, result.action_mask)

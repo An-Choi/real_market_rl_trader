@@ -99,7 +99,9 @@ def run_artifact_backtests(
     payloads: dict[str, dict] = {}
     for symbol, all_data in data_by_symbol.items():
         featured = split_by_trading_day(all_data, split=split, boundaries=boundaries)
-        environment = build_backtest_environment(featured, config)
+        environment = build_backtest_environment(
+            featured, config, feature_columns=meta.feature_columns
+        )
         if agent is None:
             agent, _ = load_artifact(artifact_path, env=environment)  # 로드 + env 계약 검증
         else:

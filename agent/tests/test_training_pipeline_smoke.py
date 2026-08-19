@@ -93,7 +93,8 @@ def test_ppo_training_pipeline_saves_loadable_artifact(tmp_path: Path) -> None:
     from models.artifact import load_metadata
 
     meta = load_metadata(artifact_dir)
-    assert meta.artifact_format_version == 4
+    assert meta.artifact_format_version == 5
+    assert meta.deployment_status == "research"
     assert set(meta.friction_params) == {
         "fee_rate", "spread_rate", "slippage_rate", "execution_uncertainty_rate",
         "sell_tax_rate", "dynamic_spread", "date_based_sell_tax",

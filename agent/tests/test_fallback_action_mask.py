@@ -22,17 +22,17 @@ def _obs(units_held_frac: float, pnl: float) -> np.ndarray:
 def test_held_position_with_negative_pnl_allows_clear() -> None:
     # 리뷰 재현 케이스: units 0.4, 손익 −0.02 → clear는 허용되어야 한다
     mask = RLAgent._mask_from_observation(_obs(0.4, -0.02))
-    np.testing.assert_array_equal(mask, [True, True, True])
+    np.testing.assert_array_equal(mask, [True, True, True, True])
 
 
 def test_flat_position_blocks_clear() -> None:
     mask = RLAgent._mask_from_observation(_obs(0.0, 0.0))
-    np.testing.assert_array_equal(mask, [True, True, False])
+    np.testing.assert_array_equal(mask, [True, True, False, False])
 
 
 def test_full_position_blocks_add() -> None:
     mask = RLAgent._mask_from_observation(_obs(1.0, 0.03))
-    np.testing.assert_array_equal(mask, [True, False, True])
+    np.testing.assert_array_equal(mask, [True, False, True, True])
 
 
 def test_observation_shorter_than_portfolio_state_raises() -> None:

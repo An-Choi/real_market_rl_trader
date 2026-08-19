@@ -64,7 +64,7 @@ class MovingAverageCrossoverAgent:
         if fast_ma > slow_ma:
             return 1, {}
         if fast_ma < slow_ma:
-            return 2, {}
+            return 3, {}
         return 0, {}
 
 
@@ -77,7 +77,7 @@ class RandomAgent:
     def predict(self, observation: Any, market_row: pd.Series | None = None) -> tuple[int, dict]:
         """Sample Hold, Buy, or Sell uniformly."""
         # TODO: Support action probabilities from config.
-        return int(self.rng.integers(0, 3)), {}
+        return int(self.rng.integers(0, 4)), {}
 
 
 @dataclass
@@ -98,7 +98,7 @@ class RuleBasedRegimeAgent:
         if market_row[self.return_col] > 0:
             return 1, {}
         if market_row[self.return_col] < 0:
-            return 2, {}
+            return 3, {}
         return 0, {}
 
 
