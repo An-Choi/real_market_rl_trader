@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -39,7 +41,7 @@ def test_predict_happy_path(client, minute_data):
     resp = client.post("/predict", json=_payload(_valid_as_of(client, minute_data)))
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["label"] in ("hold", "add_unit", "clear")
+    assert body["label"] in ("hold", "add_unit", "reduce_unit", "clear")
     assert len(body["observation"]) == 16
     assert body["action_mask"][0] is True
     assert body["artifact_id"] == "ppo-fs3-test"
@@ -97,6 +99,33 @@ def test_units_over_artifact_max_maps_to_422(client, minute_data):
     assert resp.status_code == 422
 
 
+def test_v5_held_request_requires_cost_basis(
+    monkeypatch, minute_data
+):
+    monkeypatch.setattr("app._audit", lambda config, record: None)
+    config = ServingConfig(
+        artifact_dir=Path("."),
+        data_dir=Path("."),
+        symbols=["005930"],
+        audit_log_dir=Path("."),
+    )
+    predictor = SimpleNamespace(
+        meta=SimpleNamespace(artifact_format_version=5),
+        env_params={"max_units": 5},
+    )
+    provider = SimpleNamespace()
+    client = TestClient(create_app(config, predictor, provider))
+    payload = _payload(
+        _valid_as_of(client, minute_data),
+        units_held=1,
+        shares_held=0.02,
+        bars_since_entry=1,
+    )
+    response = client.post("/predict", json=payload)
+    assert response.status_code == 422
+    assert "cost_basis" in response.json()["error"]["message"]
+
+
 def test_invariant_violation_maps_to_422(client, minute_data):
     resp = client.post("/predict", json=_payload(
         _valid_as_of(client, minute_data), units_held=0, shares_held=5.0))
@@ -109,7 +138,9 @@ def test_metadata_endpoint(client):
     assert body["artifact_id"] == "ppo-fs3-test"
     assert body["feature_schema_version"] == 4
     assert body["env_params"]["max_units"] == 5
-    assert body["action_space"]["labels"] == ["hold", "add_unit", "clear"]
+    assert body["action_space"]["labels"] == [
+        "hold", "add_unit", "reduce_unit", "clear"
+    ]
 
 
 def test_health_and_ready(client):

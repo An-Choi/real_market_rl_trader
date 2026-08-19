@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from env.trading_env import TradingEnvironment
 from evaluation.metrics import summarize_backtest
 from friction.friction_model import FrictionModel
 from models import load_artifact
+from models.artifact import load_metadata
 from policies.baseline_agents import SUPPORTED_BASELINES, make_baseline_agent
 
 
@@ -83,7 +85,11 @@ class BacktestEngine:
         while not done:
             market_row = env.get_current_market_row()
             timestamp = market_row.get("Timestamp")
-            action = self._predict_action(observation, market_row=market_row)
+            action = self._predict_action(
+                observation,
+                market_row=market_row,
+                action_mask=env.action_masks(),
+            )
             observation, reward, terminated, truncated, info = env.step(action)
 
             result_row = {
@@ -113,26 +119,67 @@ class BacktestEngine:
         """Return collected backtest results as a DataFrame."""
         return pd.DataFrame(self.results)
 
-    def _predict_action(self, observation: Any, market_row: pd.Series) -> int:
-        """Call an agent predict method while supporting simple baselines."""
-        try:
-            action_output = self.agent.predict(observation, market_row=market_row)
-        except TypeError:
-            action_output = self.agent.predict(observation)
+    def _predict_action(
+        self,
+        observation: Any,
+        market_row: pd.Series,
+        action_mask: Any,
+    ) -> int:
+        """Predict with the exact environment mask and validate the chosen action.
+
+        Learned wrappers receive ``action_masks`` explicitly; deriving a mask from
+        the observation cannot represent the cash, whole-share, or liquidity
+        gates. Rule baselines receive their market row and an invalid no-op request
+        is normalized to Hold, preserving valid environment actions without
+        changing the rule's market signal.
+        """
+        predict = self.agent.predict
+        parameters = inspect.signature(predict).parameters
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        kwargs: dict[str, Any] = {}
+        is_rule_baseline = "market_row" in parameters
+        if is_rule_baseline or accepts_kwargs:
+            kwargs["market_row"] = market_row
+        if "action_masks" in parameters or accepts_kwargs:
+            kwargs["action_masks"] = action_mask
+        if "deterministic" in parameters or accepts_kwargs:
+            kwargs["deterministic"] = True
+        action_output = predict(observation, **kwargs)
 
         if isinstance(action_output, tuple):
-            return int(action_output[0])
-        return int(action_output)
+            action = int(action_output[0])
+        else:
+            action = int(action_output)
+        if action < 0 or action >= len(action_mask):
+            raise ValueError(
+                f"agent predicted out-of-range action {action} for mask size {len(action_mask)}"
+            )
+        if not bool(action_mask[action]):
+            if is_rule_baseline:
+                return 0
+            raise ValueError(
+                f"learned agent predicted masked action {action}: "
+                f"{[bool(value) for value in action_mask]}"
+            )
+        return action
 
 
-def build_backtest_environment(featured_data: Any, config: dict[str, Any]) -> TradingEnvironment:
+def build_backtest_environment(
+    featured_data: Any,
+    config: dict[str, Any],
+    *,
+    feature_columns: list[str] | tuple[str, ...] | None = None,
+) -> TradingEnvironment:
     """Build the standard environment used for policy evaluation."""
     environment_config = config["environment"]
     episode_days = int(environment_config.get("episode_days", 1))
     nominal_bars = int(environment_config.get("nominal_bars_per_day", 64))
     return TradingEnvironment(
         market_data=featured_data,
-        feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
+        feature_columns=list(feature_columns or FeatureEngineer.FEATURE_COLUMNS),
         initial_cash=config["environment"]["initial_cash"],
         unit_fraction=config["environment"]["unit_fraction"],
         max_units=config["environment"]["max_units"],
@@ -208,7 +255,10 @@ def evaluate_artifact(
     seed: int,
 ) -> dict[str, Any]:
     """Evaluate one saved learned-policy artifact."""
-    environment = build_backtest_environment(featured_data, config)
+    metadata = load_metadata(artifact_path)
+    environment = build_backtest_environment(
+        featured_data, config, feature_columns=metadata.feature_columns
+    )
     agent, metadata = load_artifact(artifact_path, env=environment)
     return run_agent_backtest(
         agent=agent,

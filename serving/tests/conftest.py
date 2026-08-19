@@ -111,7 +111,7 @@ def tiny_artifact_dir(tmp_path_factory, minute_data):
                                 "holding_duration_norm", "tod_frac",
                                 "liquidity_pressure"],
         observation_dim=len(FeatureEngineer.FEATURE_COLUMNS) + 5,
-        action_space={"type": "discrete", "n": 3,
+        action_space={"type": "discrete", "n": len(EXPECTED_ACTION_LABELS),
                       "labels": list(EXPECTED_ACTION_LABELS)},
         normalization=None,
         train_git_sha="test",

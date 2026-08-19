@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from env.trading_env import TradingEnvironment
+from friction.friction_model import FrictionModel
 
 
 def _data(closes: list[float], exec_prices: list[float]) -> pd.DataFrame:
@@ -41,8 +42,9 @@ def test_buy_fills_at_exec_price_not_observed_close() -> None:
     env = make_env(_data([100.0, 100.0, 100.0], [102.0, 102.0, 102.0]))
     env.reset(seed=0)
     env.step(1)  # Add 1 Unit = 2,000 고정 notional
-    assert env.shares_held == pytest.approx(2_000.0 / 102.0)   # Close(100) 체결이면 20주
-    assert env.cash == pytest.approx(10_000.0 - 2_000.0 - 4.0)  # friction 0.2% of 2,000
+    assert env.shares_held == 19  # whole-share fill; Close(100) would buy 20
+    trade_value = 19 * 102.0
+    assert env.cash == pytest.approx(10_000.0 - trade_value - trade_value * 0.002)
 
 
 def test_clear_fills_at_exec_price() -> None:
@@ -52,7 +54,7 @@ def test_clear_fills_at_exec_price() -> None:
     env.step(1)                      # 100에 20주 매수
     cash_before = env.cash
     shares = env.shares_held
-    env.step(2)                      # Clear — ExecPrice 98로 매도
+    env.step(3)                      # Clear at ExecPrice 98
     proceeds = shares * 98.0
     friction = proceeds * (0.001 + 0.0005 + 0.0005 + 0.002)  # fee+spread+slip+sell tax
     assert env.cash == pytest.approx(cash_before + proceeds - friction)
@@ -66,14 +68,74 @@ def test_nan_exec_price_falls_back_to_close() -> None:
     assert env.shares_held == pytest.approx(2_000.0 / 100.0)
 
 
-def test_estimate_liquidation_cost_uses_exec_price() -> None:
+def test_terminal_settlement_includes_exec_price_gap_and_friction() -> None:
     env = make_env(_data([100.0, 100.0, 100.0], [102.0, 102.0, 102.0]))
     env.reset(seed=0)
-    env.step(1)                      # 102에 2,000/102주 매수
+    env.step(1)                      # 102에 19주 매수
     shares = env.shares_held
-    # 현재 시점(step 1) 청산 추정도 ExecPrice(102) 기준 매도 friction.
-    expected = shares * 102.0 * (0.001 + 0.0005 + 0.0005 + 0.002)
+    execution_value = shares * 102.0
+    marked_value = shares * 100.0
+    friction = execution_value * (0.001 + 0.0005 + 0.0005 + 0.002)
+    expected = marked_value - execution_value + friction
+    assert env.estimate_terminal_settlement_adjustment() == pytest.approx(expected)
     assert env.estimate_liquidation_cost() == pytest.approx(expected)
+
+
+def test_zero_share_add_is_a_complete_no_op() -> None:
+    env = make_env(_data([300_000.0] * 3, [300_000.0] * 3))
+    env.reset(seed=0)
+    before = (env.cash, env.units_held, env.shares_held, env.cost_basis)
+    assert env.action_masks().tolist() == [True, False, False, False]
+    _, _, _, _, info = env.step(1)
+    after = (env.cash, env.units_held, env.shares_held, env.cost_basis)
+    assert after == before
+    assert info["trade_value"] == 0.0
+    assert env._share_lots == []
+    assert env._lot_costs == []
+
+
+def test_sell_liquidity_uses_actual_reduce_or_clear_order_size() -> None:
+    data = _data([100.0] * 5, [100.0] * 5)
+    data["Adv20"] = 1_000_000.0
+    friction = FrictionModel(
+        fee_rate=0.0,
+        spread_rate=0.0,
+        slippage_rate=0.001,
+        execution_uncertainty_rate=0.0,
+        sell_tax_rate=0.0,
+    )
+
+    reduce_env = TradingEnvironment(
+        market_data=data,
+        feature_columns=["ma_5"],
+        initial_cash=10_000.0,
+        unit_fraction=0.2,
+        max_units=5,
+        friction_model=friction,
+    )
+    reduce_env.reset(seed=0)
+    reduce_env.step(1)
+    reduce_env.step(1)
+    _, _, _, _, reduce_info = reduce_env.step(2)
+
+    clear_env = TradingEnvironment(
+        market_data=data,
+        feature_columns=["ma_5"],
+        initial_cash=10_000.0,
+        unit_fraction=0.2,
+        max_units=5,
+        friction_model=friction,
+    )
+    clear_env.reset(seed=0)
+    clear_env.step(1)
+    clear_env.step(1)
+    _, _, _, _, clear_info = clear_env.step(3)
+
+    # 2,000/ADV => score .5 => friction 4; 4,000/ADV => score .25 => 16.
+    assert reduce_info["trade_value"] == -2_000.0
+    assert reduce_info["friction_cost"] == pytest.approx(4.0)
+    assert clear_info["trade_value"] == -4_000.0
+    assert clear_info["friction_cost"] == pytest.approx(16.0)
 
 
 def test_observation_excludes_exec_price() -> None:

@@ -10,6 +10,13 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 
+DEFAULT_ROBUST_SELECTION_WEIGHTS = {
+    "median_return": 1.0,
+    "worst_return": 0.5,
+    "max_drawdown": 0.5,
+}
+
+
 @dataclass(frozen=True)
 class ValidationSnapshot:
     """Metrics from one deterministic pass over the validation split."""
@@ -23,10 +30,101 @@ class ValidationSnapshot:
     hold_action_rate: float
     add_action_rate: float
     clear_action_rate: float
+    reduce_action_rate: float = 0.0
+
+
+def summarize_validation_snapshots(
+    snapshots: dict[str, ValidationSnapshot],
+    *,
+    selection: dict[str, Any] | None = None,
+) -> dict[str, float | bool]:
+    """Aggregate validation windows and calculate a robust checkpoint score."""
+    if not snapshots:
+        raise ValueError("validation snapshots must not be empty")
+    config = dict(selection or {})
+    metric = str(config.get("metric", "mean_total_return"))
+    returns = np.asarray(
+        [snapshot.total_return for snapshot in snapshots.values()], dtype=np.float64
+    )
+    drawdowns = np.asarray(
+        [snapshot.max_drawdown for snapshot in snapshots.values()], dtype=np.float64
+    )
+    hold_rates = np.asarray(
+        [snapshot.hold_action_rate for snapshot in snapshots.values()], dtype=np.float64
+    )
+    stats = {
+        "mean_total_return": float(np.mean(returns)),
+        "median_total_return": float(np.median(returns)),
+        "worst_total_return": float(np.min(returns)),
+        "mean_max_drawdown": float(np.mean(drawdowns)),
+        "mean_hold_action_rate": float(np.mean(hold_rates)),
+        "max_hold_action_rate": float(np.max(hold_rates)),
+    }
+    if metric == "mean_total_return":
+        score = stats["mean_total_return"]
+    elif metric == "robust_return":
+        weights = dict(DEFAULT_ROBUST_SELECTION_WEIGHTS)
+        configured_weights = config.get("weights", {})
+        unknown_weights = set(configured_weights).difference(weights)
+        if unknown_weights:
+            raise ValueError(
+                f"unknown validation selection weights: {sorted(unknown_weights)}"
+            )
+        weights.update(configured_weights)
+        for key, value in weights.items():
+            if not isinstance(value, (int, float)) or not np.isfinite(value) or value < 0:
+                raise ValueError(
+                    f"validation selection weight {key} must be finite and >= 0"
+                )
+        score = (
+            weights["median_return"] * stats["median_total_return"]
+            + weights["worst_return"] * min(stats["worst_total_return"], 0.0)
+            + weights["max_drawdown"] * stats["mean_max_drawdown"]
+        )
+    else:
+        raise ValueError(f"unsupported validation selection metric: {metric}")
+
+    qualified = True
+    gates = {
+        "minimum_score": float(score),
+        "minimum_worst_return": stats["worst_total_return"],
+        "max_mean_drawdown": -stats["mean_max_drawdown"],
+    }
+    for key, actual in gates.items():
+        if key not in config:
+            continue
+        threshold = config[key]
+        if not isinstance(threshold, (int, float)) or not np.isfinite(threshold):
+            raise ValueError(f"validation selection gate {key} must be finite")
+        if key == "max_mean_drawdown":
+            if threshold < 0:
+                raise ValueError("max_mean_drawdown must be >= 0")
+            qualified = qualified and actual <= float(threshold)
+        else:
+            qualified = qualified and actual >= float(threshold)
+    if "maximum_hold_action_rate" in config:
+        threshold = config["maximum_hold_action_rate"]
+        if (
+            not isinstance(threshold, (int, float))
+            or not np.isfinite(threshold)
+            or not 0.0 <= threshold <= 1.0
+        ):
+            raise ValueError("maximum_hold_action_rate must be between 0 and 1")
+        qualified = qualified and stats["mean_hold_action_rate"] <= float(threshold)
+    if "maximum_window_hold_action_rate" in config:
+        threshold = config["maximum_window_hold_action_rate"]
+        if (
+            not isinstance(threshold, (int, float))
+            or not np.isfinite(threshold)
+            or not 0.0 <= threshold <= 1.0
+        ):
+            raise ValueError("maximum_window_hold_action_rate must be between 0 and 1")
+        qualified = qualified and stats["max_hold_action_rate"] <= float(threshold)
+    return {"selection_score": float(score), "qualified": bool(qualified), **stats}
 
 
 class FullSplitValidationCallback(BaseCallback):
-    """Keep the parameters with the best full-validation terminal return."""
+    """Keep parameters with the best configured multi-window validation score."""
 
     def __init__(
         self,
@@ -37,6 +135,7 @@ class FullSplitValidationCallback(BaseCallback):
         seed: int = 0,
         deterministic: bool = True,
         verbose: int = 0,
+        selection: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(verbose=verbose)
         if eval_freq <= 0:
@@ -48,6 +147,11 @@ class FullSplitValidationCallback(BaseCallback):
         self.use_action_masks = bool(use_action_masks)
         self.seed = int(seed)
         self.deterministic = bool(deterministic)
+        self.selection = dict(selection or {})
+        summarize_validation_snapshots(
+            {"validation": ValidationSnapshot(0, 0, 0, 0, 0, 0, 1, 0, 0)},
+            selection=self.selection,
+        )
         self.best_score = float("-inf")
         self.best_timestep: int | None = None
         self.best_snapshot: dict[str, ValidationSnapshot] | None = None
@@ -55,6 +159,13 @@ class FullSplitValidationCallback(BaseCallback):
         self.evaluation_count = 0
         self._last_evaluation_timestep: int | None = None
         self._best_parameters: dict[str, Any] | None = None
+        # Keep the strongest rejected checkpoint for diagnostics only.  It may
+        # be restored for an offline research artifact, but it is never marked
+        # as the qualified best or eligible for serving.
+        self.best_candidate_score = float("-inf")
+        self.best_candidate_timestep: int | None = None
+        self.best_candidate_snapshot: dict[str, ValidationSnapshot] | None = None
+        self._best_candidate_parameters: dict[str, Any] | None = None
 
     def _on_training_start(self) -> None:
         # Step zero is a useful control: a later checkpoint must genuinely beat
@@ -70,28 +181,38 @@ class FullSplitValidationCallback(BaseCallback):
     def _on_training_end(self) -> None:
         if self._last_evaluation_timestep != self.num_timesteps:
             self._evaluate_and_maybe_update()
-        if self._best_parameters is not None:
-            self.model.set_parameters(self._best_parameters, exact_match=True)
+        parameters = self._best_parameters or self._best_candidate_parameters
+        if parameters is not None:
+            self.model.set_parameters(parameters, exact_match=True)
 
     def _evaluate_and_maybe_update(self) -> None:
         snapshots = self._run_all_splits()
-        mean_return = float(
-            np.mean([snap.total_return for snap in snapshots.values()])
-        )
+        metrics = summarize_validation_snapshots(snapshots, selection=self.selection)
+        score = float(metrics["selection_score"])
         self.latest_snapshot = snapshots
         self.evaluation_count += 1
         self._last_evaluation_timestep = self.num_timesteps
 
-        if mean_return > self.best_score:
-            self.best_score = mean_return
+        if score > self.best_candidate_score:
+            self.best_candidate_score = score
+            self.best_candidate_timestep = int(self.num_timesteps)
+            self.best_candidate_snapshot = snapshots
+            self._best_candidate_parameters = copy.deepcopy(self.model.get_parameters())
+
+        if bool(metrics["qualified"]) and score > self.best_score:
+            self.best_score = score
             self.best_timestep = int(self.num_timesteps)
             self.best_snapshot = snapshots
             self._best_parameters = copy.deepcopy(self.model.get_parameters())
             if self.verbose:
                 print(
-                    f"Validation best updated at {self.num_timesteps} steps: {mean_return:.4%}"
+                    f"Validation best updated at {self.num_timesteps} steps: "
+                    f"score={score:.4f}, median={metrics['median_total_return']:.2%}, "
+                    f"worst={metrics['worst_total_return']:.2%}, "
+                    f"mean_mdd={metrics['mean_max_drawdown']:.2%}, "
+                    f"qualified={metrics['qualified']}"
                 )
-        self._record(snapshots, mean_return)
+        self._record(snapshots, metrics)
 
     def _run_all_splits(self) -> dict[str, ValidationSnapshot]:
         return {
@@ -111,7 +232,7 @@ class FullSplitValidationCallback(BaseCallback):
         portfolio_values = [initial_value]
         traded_notional = 0.0
         trade_count = 0
-        action_counts = np.zeros(3, dtype=np.int64)
+        action_counts = np.zeros(4, dtype=np.int64)
 
         done = False
         while not done:
@@ -144,7 +265,8 @@ class FullSplitValidationCallback(BaseCallback):
             trade_count=trade_count,
             hold_action_rate=float(action_counts[0] / action_total),
             add_action_rate=float(action_counts[1] / action_total),
-            clear_action_rate=float(action_counts[2] / action_total),
+            reduce_action_rate=float(action_counts[2] / action_total),
+            clear_action_rate=float(action_counts[3] / action_total),
         )
 
     def _env_attr(self, env: Any, name: str) -> Any:
@@ -157,11 +279,24 @@ class FullSplitValidationCallback(BaseCallback):
         self.logger.record(key, float(value))
 
     def _record(
-        self, snapshots: dict[str, ValidationSnapshot], mean_return: float
+        self,
+        snapshots: dict[str, ValidationSnapshot],
+        metrics: dict[str, float | bool],
     ) -> None:
         for symbol, snap in snapshots.items():
             self._record_value(f"validation/return_{symbol}", snap.total_return)
-        self._record_value("validation/mean_total_return", mean_return)
+        for key in (
+            "selection_score",
+            "mean_total_return",
+            "median_total_return",
+            "worst_total_return",
+            "mean_max_drawdown",
+            "mean_hold_action_rate",
+        ):
+            self._record_value(f"validation/{key}", float(metrics[key]))
+        self._record_value("validation/qualified", float(bool(metrics["qualified"])))
+        self._record_value("validation/best_selection_score", self.best_score)
+        # Preserve the legacy TensorBoard key for existing dashboards.
         self._record_value("validation/best_mean_total_return", self.best_score)
 
     def summary(self) -> dict[str, Any]:
@@ -173,17 +308,21 @@ class FullSplitValidationCallback(BaseCallback):
             if snapshots is None:
                 return None
             return {
-                "mean_total_return": float(
-                    np.mean([s.total_return for s in snapshots.values()])
+                **summarize_validation_snapshots(
+                    snapshots, selection=self.selection
                 ),
                 "per_symbol": {sym: asdict(s) for sym, s in snapshots.items()},
             }
 
         return {
-            "metric": "mean_total_return",
+            "metric": str(self.selection.get("metric", "mean_total_return")),
+            "selection": self.selection,
             "eval_freq": self.eval_freq,
             "evaluation_count": self.evaluation_count,
             "best_timestep": self.best_timestep,
             "best": _pack(self.best_snapshot),
+            "qualified_checkpoint_found": self.best_snapshot is not None,
+            "best_candidate_timestep": self.best_candidate_timestep,
+            "best_candidate": _pack(self.best_candidate_snapshot),
             "latest": _pack(self.latest_snapshot),
         }

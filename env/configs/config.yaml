@@ -11,7 +11,7 @@ data:
   interval: 1m
 
 environment:
-  initial_cash: 10000.0
+  initial_cash: 100000000.0
   unit_fraction: 0.199  # friction 내고도 5 Unit 도달 가능하게 (0.20이면 수수료 4원 부족)
   max_units: 5
   episode_days: 20            # 학습 episode = 연속 20거래일
@@ -28,7 +28,8 @@ environment:
   action_space:
     0: Hold
     1: Add 1 Unit
-    2: Clear
+    2: Reduce 1 Unit
+    3: Clear
 
 friction:
   # 2026-07 실측·검증 기반 정밀 보정 (한투 API 기준):
@@ -39,7 +40,7 @@ friction:
   dynamic_spread: true
   spread_rate: 0.001
   # 소액 주문(수천 원 notional)은 삼성전자 최우선호가 잔량 대비 슬리피지 사실상 0
-  slippage_rate: 0.0
+  slippage_rate: 0.0002
   execution_uncertainty_rate: 0.0
   # 체결일 기준 세율 연혁 적용: 2025년 0.15% → 2026년~ 0.20%. sell_tax_rate는 fallback.
   date_based_sell_tax: true
@@ -49,6 +50,8 @@ agent:
   type: rl
   baseline_name: buy_and_hold
   rl_model_name: MaskablePPO
+  # MLP PPO is faster on CPU because rollout/environment work dominates.
+  device: cpu
   total_timesteps: 300000
   normalization:
     enabled: true
@@ -60,9 +63,22 @@ agent:
   validation:
     enabled: true
     eval_freq: 25000
+    window_days: 20
+    min_window_days: 10
     deterministic: true
     seed: 42
     verbose: 1
+    selection:
+      metric: robust_return
+      weights:
+        median_return: 1.0
+        worst_return: 0.5
+        max_drawdown: 0.5
+      minimum_score: 0.0
+      minimum_worst_return: -0.02
+      max_mean_drawdown: 0.10
+      maximum_hold_action_rate: 0.995
+      maximum_window_hold_action_rate: 0.995
   ppo:
     learning_rate: 0.0003
     n_steps: 2048
@@ -82,6 +98,15 @@ agent:
 backtest:
   max_steps:
   benchmark: buy_and_hold
+
+walk_forward:
+  folds: 3
+  minimum_coverage: 0.95
+  validation_days: 60
+  validation_window_days: 20
+  min_validation_regimes: 2
+  regime_threshold: 0.03
+  test_days: 20
 
 
 seed: 42

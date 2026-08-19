@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -41,6 +42,7 @@ def test_build_creates_parquet(tmp_path: Path) -> None:
     v = FeatureEngineer.FEATURE_SCHEMA_VERSION
     cached = tmp_path / "processed" / "005930" / f"features_v{v}.parquet"
     assert cached.exists()
+    assert cached.with_suffix(".manifest.json").exists()
     assert list(out.columns) == (
         ["Timestamp", "Close", "ExecPrice", "Adv20"] + list(FeatureEngineer.FEATURE_COLUMNS)
     )
@@ -61,3 +63,26 @@ def test_schema_version_in_filename(tmp_path: Path) -> None:
     build_features("005930", _loader(tmp_path))
     v = FeatureEngineer.FEATURE_SCHEMA_VERSION
     assert (tmp_path / "processed" / "005930" / f"features_v{v}.parquet").exists()
+
+
+def test_raw_partition_change_invalidates_feature_cache(tmp_path: Path) -> None:
+    _write_minute_parquet(tmp_path / "raw", "005930")
+    loader = _loader(tmp_path)
+    first = build_features("005930", loader)
+    version = FeatureEngineer.FEATURE_SCHEMA_VERSION
+    cache = tmp_path / "processed" / "005930" / f"features_v{version}.parquet"
+    manifest_path = cache.with_suffix(".manifest.json")
+    first_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    raw_path = tmp_path / "raw" / "005930" / "1m" / "2025-06.parquet"
+    raw = pd.read_parquet(raw_path, engine="pyarrow")
+    final_day = pd.to_datetime(raw["Timestamp"]).dt.date.max()
+    target = pd.to_datetime(raw["Timestamp"]).dt.date == final_day
+    raw.loc[target, "Close"] = raw.loc[target, "Close"] + 25.0
+    raw.to_parquet(raw_path, engine="pyarrow", index=False)
+
+    second = build_features("005930", loader)
+    second_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert first_manifest["source_fingerprint"] != second_manifest["source_fingerprint"]
+    assert not first.equals(second)

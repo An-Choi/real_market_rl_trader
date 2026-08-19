@@ -170,3 +170,18 @@ def test_empty_results() -> None:
     metrics = summarize_backtest(pd.DataFrame(), initial_value=10000.0)
     assert metrics["total_return"] == 0.0
     assert "forced_clear_count" not in metrics
+
+
+def test_four_action_rates_are_reported_separately() -> None:
+    results = _results(
+        exec_ts=["2025-06-02 09:00"] * 4,
+        val_ts=["2025-06-02 09:05"] * 4,
+        values=[10000.0] * 4,
+        units=[0, 1, 0, 0],
+        actions=[0, 1, 2, 3],
+    )
+    metrics = summarize_backtest(results, initial_value=10000.0)
+    assert metrics["hold_action_rate"] == 0.25
+    assert metrics["add_action_rate"] == 0.25
+    assert metrics["reduce_action_rate"] == 0.25
+    assert metrics["clear_action_rate"] == 0.25

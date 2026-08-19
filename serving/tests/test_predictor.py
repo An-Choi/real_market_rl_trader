@@ -23,7 +23,7 @@ def _tampered_copy(tiny_artifact_dir, tmp_path, mutate):
 def test_load_happy_path_and_deterministic_predict(tiny_artifact_dir):
     predictor = Predictor.load(tiny_artifact_dir)
     obs = np.zeros(16, dtype=np.float32)
-    mask = np.array([True, True, False])
+    mask = np.array([True, True, False, False])
     first = predictor.predict(obs, mask)
     assert first in (0, 1, 2)
     assert predictor.predict(obs, mask) == first          # 결정론
@@ -81,8 +81,37 @@ def test_serving_accepts_v4_artifact_metadata(tiny_artifact_dir, tmp_path):
     tampered = _tampered_copy(tiny_artifact_dir, tmp_path, mutate)
     predictor = Predictor.load(tampered)
     obs = np.zeros(16, dtype=np.float32)
-    mask = np.array([True, True, False])
+    mask = np.array([True, True, False, False])
     assert predictor.predict(obs, mask) in (0, 1, 2)
+
+
+def test_serving_accepts_only_approved_qualified_v5(tiny_artifact_dir, tmp_path):
+    def mutate(d: dict) -> None:
+        d["artifact_format_version"] = 5
+        d["train_data"] = _v4_train_data(d)
+        d["train_data"]["trained_split"] = "train"
+        d["deployment_status"] = "approved"
+        d["training_params"] = {
+            "validation": {"best": {"qualified": True}}
+        }
+
+    artifact = _tampered_copy(tiny_artifact_dir, tmp_path, mutate)
+    assert Predictor.load(artifact).meta.deployment_status == "approved"
+
+
+def test_serving_rejects_rejected_v5(tiny_artifact_dir, tmp_path):
+    def mutate(d: dict) -> None:
+        d["artifact_format_version"] = 5
+        d["train_data"] = _v4_train_data(d)
+        d["train_data"]["trained_split"] = "train"
+        d["deployment_status"] = "rejected"
+        d["training_params"] = {
+            "validation": {"best_candidate": {"qualified": False}}
+        }
+
+    artifact = _tampered_copy(tiny_artifact_dir, tmp_path, mutate)
+    with pytest.raises(ArtifactError, match="not an approved qualified"):
+        Predictor.load(artifact)
 
 
 def test_serving_rejects_v2_artifact_metadata_with_v3_v4_message(tiny_artifact_dir, tmp_path):

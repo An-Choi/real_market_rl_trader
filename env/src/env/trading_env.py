@@ -18,12 +18,15 @@ from env.observation import (
     can_afford_add,
     compute_action_mask,
     extract_feature_vector,
+    liquidity_score_from_adv,
+    whole_share_trade_value,
 )
 
 
 ACTION_HOLD = 0
 ACTION_ADD = 1
-ACTION_CLEAR = 2
+ACTION_REDUCE = 2
+ACTION_CLEAR = 3
 
 
 @dataclass
@@ -65,7 +68,7 @@ class TradingEnvironment(gym.Env):
     ) -> None:
         """Real-OHLCV intraday Unit-scaling environment.
 
-        Discrete actions: 0=Hold, 1=Add 1 Unit, 2=Clear.
+        Discrete actions: 0=Hold, 1=Add 1 Unit, 2=Reduce 1 Unit, 3=Clear.
         feature_schema_version: feature 계산 파이프라인의 schema version 선언 — artifact 호환성 검증용.
         """
         super().__init__()
@@ -136,7 +139,7 @@ class TradingEnvironment(gym.Env):
             return_mode=reward_return_mode,
         )
 
-        self.action_space = spaces.Discrete(3)
+        self.action_space = spaces.Discrete(4)
         observation_size = len(self.feature_columns) + 5
         self.observation_space = spaces.Box(
             low=-np.inf,
@@ -149,6 +152,9 @@ class TradingEnvironment(gym.Env):
         self.cash = self.initial_cash
         self.units_held = 0
         self.shares_held = 0.0
+        self.cost_basis = 0.0
+        self._share_lots: list[int] = []
+        self._lot_costs: list[float] = []
         self.entry_step: int | None = None
         self.entry_price: float | None = None
         self.portfolio_value = self.initial_cash
@@ -194,6 +200,9 @@ class TradingEnvironment(gym.Env):
         self.cash = self.initial_cash
         self.units_held = 0
         self.shares_held = 0.0
+        self.cost_basis = 0.0
+        self._share_lots = []
+        self._lot_costs = []
         self.entry_step = None
         self.entry_price = None
         self.portfolio_value = self.initial_cash
@@ -217,12 +226,17 @@ class TradingEnvironment(gym.Env):
         """Return actions that can change or preserve the current position.
 
         Hold is always valid. Add is invalid at maximum allocation **or when
-        cash cannot cover the buy notional plus friction** (cash ≥ 0 invariant
-        — 음수 현금은 무이자 레버리지라 금지). Clear is invalid while flat.
+        cash cannot cover the executable whole-share notional plus friction**
+        (cash ≥ 0 invariant — 음수 현금은 무이자 레버리지라 금지). Reduce와
+        Clear는 flat 상태에서 무효다.
         Mask-aware policies avoid learning from duplicate no-op actions without
-        changing the public three-action contract.
+        changing the public four-action contract.
         """
         row = self._row_at(self.current_step)
+        price = float(row[self.price_col])
+        add_trade_value = whole_share_trade_value(
+            self.initial_cash * self.unit_fraction, price
+        )
         return compute_action_mask(
             units_held=self.units_held,
             max_units=self.max_units,
@@ -230,9 +244,9 @@ class TradingEnvironment(gym.Env):
             initial_cash=self.initial_cash,
             unit_fraction=self.unit_fraction,
             friction_model=self.friction_model,
-            price=float(row[self.price_col]),
+            price=price,
             trade_date=pd.Timestamp(row["Timestamp"]).date(),
-            liquidity_score=self._current_liquidity_score(),
+            liquidity_score=self._current_liquidity_score(add_trade_value),
         )
 
     def _can_afford_add(
@@ -249,6 +263,9 @@ class TradingEnvironment(gym.Env):
             price = float(row[self.price_col])
         if trade_date is None:
             trade_date = pd.Timestamp(row["Timestamp"]).date()
+        add_trade_value = whole_share_trade_value(
+            self.initial_cash * self.unit_fraction, price
+        )
         return can_afford_add(
             cash=self.cash,
             initial_cash=self.initial_cash,
@@ -256,7 +273,7 @@ class TradingEnvironment(gym.Env):
             friction_model=self.friction_model,
             price=price,
             trade_date=trade_date,
-            liquidity_score=self._current_liquidity_score(),
+            liquidity_score=self._current_liquidity_score(add_trade_value),
         )
 
     def _execution_price(self, local_step: int) -> float:
@@ -331,22 +348,39 @@ class TradingEnvironment(gym.Env):
         }
         return self._get_observation(), reward_terms.reward, False, truncated, info
 
-    def estimate_liquidation_cost(self) -> float:
-        """현재 보유분을 현재 bar에 가상 매도할 때의 friction (metrics 정산용).
+    def estimate_terminal_settlement_adjustment(self) -> float:
+        """Return the signed adjustment from marked Close equity to cash settlement.
 
-        실제 거래·reward에는 쓰지 않는다 — 평가 회계 전용.
+        마지막 portfolio value는 관찰 가능한 Close로 평가되어 있지만 실제 청산은
+        그 시점의 ExecPrice로 체결된다. 따라서 metrics에서 빼야 하는 값은 단순한
+        매도 friction이 아니라 ``Close 보유가치 - ExecPrice 매도대금 + friction``
+        이다. ExecPrice가 Close보다 충분히 높으면 이 값은 음수가 될 수 있다.
+        실제 거래나 reward에는 적용하지 않는 평가 회계 전용 helper다.
         """
-        price = self._execution_price(self.current_step)
-        held_value = self._held_market_value(price)
-        if held_value <= 0:
+        if self.shares_held <= 0:
             return 0.0
-        return self.friction_model.calculate_total_friction(
-            trade_value=held_value,
+        row = self._row_at(self.current_step)
+        mark_price = float(row[self.price_col])
+        execution_price = self._execution_price(self.current_step)
+        marked_value = self._held_market_value(mark_price)
+        execution_value = self._held_market_value(execution_price)
+        friction_cost = self.friction_model.calculate_total_friction(
+            trade_value=execution_value,
             side="sell",
-            liquidity_score=self._current_liquidity_score(),
-            price=price,
-            trade_date=pd.Timestamp(self._row_at(self.current_step)["Timestamp"]).date(),
+            liquidity_score=self._current_liquidity_score(execution_value),
+            price=execution_price,
+            trade_date=pd.Timestamp(row["Timestamp"]).date(),
         )
+        return float(marked_value - execution_value + friction_cost)
+
+    def estimate_liquidation_cost(self) -> float:
+        """Compatibility alias for the full terminal settlement adjustment.
+
+        The historical name is retained because validation and backtest callers
+        already use it. Its value now includes execution-price adjustment as well
+        as sell friction, so subtracting it produces exact cash-after-liquidation.
+        """
+        return self.estimate_terminal_settlement_adjustment()
 
     def _get_observation(self) -> np.ndarray:
         """Observation = features + Unit portfolio state (4).
@@ -379,6 +413,7 @@ class TradingEnvironment(gym.Env):
             step_in_day=self.current_step - day_start,
             nominal_bars_per_day=self.nominal_bars_per_day,
             adv_value=adv_value_from_row(row),
+            cost_basis=self.cost_basis,
         )
         return assemble_observation(features, portfolio_state)
 
@@ -433,25 +468,41 @@ class TradingEnvironment(gym.Env):
             delta_units = 0
 
         if delta_units > 0:
-            # 매수: 고정 notional 지출, shares 누적.
-            trade_value = delta_units * unit_notional
-            side = "buy"
-            self.cash -= trade_value
-            self.shares_held += trade_value / price
-            if self.entry_step is None:
-                self.entry_step = self.current_step
+            # 매수: 고정 Unit 예산 안에서 정수 주식만 체결한다. 1주도 살 수
+            # 없으면 units/lot/cost-basis를 건드리지 않는 완전한 no-op이다.
+            shares_bought = int(unit_notional // price)
+            if shares_bought <= 0:
+                target_units = prev_units
+                delta_units = 0
+                trade_value = 0.0
+                side = "buy"
+            else:
+                trade_value = float(shares_bought * price)
+                side = "buy"
+                self.cash -= trade_value
+                self.shares_held += shares_bought
+                self.cost_basis += trade_value
+                self._share_lots.append(shares_bought)
+                self._lot_costs.append(trade_value)
+                if self.entry_step is None:
+                    self.entry_step = self.current_step
         elif delta_units < 0:
             # 매도(Clear): 보유 주식을 현재가로 현금화. (long-only라 항상 전량 청산.)
-            shares_sold = self.shares_held
+            units_to_sell = prev_units - target_units
+            shares_sold = int(sum(self._share_lots[-units_to_sell:]))
             trade_value = -shares_sold * price
             side = "sell"
             self.cash += shares_sold * price
-            self.shares_held = 0.0
+            self.shares_held -= shares_sold
+            sold_cost_basis = float(sum(self._lot_costs[-units_to_sell:]))
+            self.cost_basis = max(0.0, self.cost_basis - sold_cost_basis)
+            del self._share_lots[-units_to_sell:]
+            del self._lot_costs[-units_to_sell:]
         else:
             trade_value = 0.0
             side = "buy"
 
-        liquidity_score = self._current_liquidity_score()
+        liquidity_score = self._current_liquidity_score(abs(trade_value))
         friction_cost = (
             self.friction_model.calculate_total_friction(
                 trade_value=trade_value,
@@ -467,6 +518,10 @@ class TradingEnvironment(gym.Env):
         self.units_held = target_units
         if target_units == 0:
             self.entry_step = None
+            self.shares_held = 0.0
+            self.cost_basis = 0.0
+            self._share_lots = []
+            self._lot_costs = []
 
         execution = TradeExecution(
             action=action,
@@ -481,6 +536,8 @@ class TradingEnvironment(gym.Env):
         """Map discrete action to target Unit count (long-only, 0..max_units)."""
         if action == ACTION_ADD:
             return min(self.units_held + 1, self.max_units)
+        if action == ACTION_REDUCE:
+            return max(self.units_held - 1, 0)
         if action == ACTION_CLEAR:
             return 0
         return self.units_held
@@ -494,11 +551,21 @@ class TradingEnvironment(gym.Env):
         price = float(self._row_at(self.current_step)[self.price_col])
         return self.cash + self._held_market_value(price)
 
-    def _current_liquidity_score(self) -> float | None:
-        """Return current liquidity score when available."""
-        if "liquidity_score" not in self.market_data.columns:
-            return None
-        return float(self._row_at(self.current_step)["liquidity_score"])
+    def _current_liquidity_score(self, trade_value: float | None = None) -> float | None:
+        """Return an order-size-specific liquidity score when ADV is available."""
+        row = self._row_at(self.current_step)
+        adv = adv_value_from_row(row)
+        if trade_value is None:
+            trade_value = whole_share_trade_value(
+                self.initial_cash * self.unit_fraction,
+                float(row[self.price_col]),
+            )
+        if adv is not None and np.isfinite(adv) and adv > 0:
+            return liquidity_score_from_adv(adv, trade_value)
+        if "liquidity_score" in self.market_data.columns:
+            score = float(row["liquidity_score"])
+            return score if np.isfinite(score) else None
+        return None
 
     def get_current_market_row(self) -> pd.Series:
         """Current market row within the active trading day."""

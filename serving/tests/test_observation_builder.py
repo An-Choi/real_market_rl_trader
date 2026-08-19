@@ -97,10 +97,13 @@ def test_as_of_before_data_start_raises_insufficient(minute_data):
 
 
 def test_all_defect_days_raise_insufficient(minute_data):
-    # 09:00 행 제거 → 모든 날 late-start 결손 판정 → 파이프라인 내부
+    # 허용 가능한 3분 head gap보다 크게 09:00~09:04를 제거하면 모든 날이
+    # late-start 결손 판정 → 파이프라인 내부
     # ValueError("No objects to concatenate")가 InsufficientHistoryError로 매핑
     ts = pd.to_datetime(minute_data["Timestamp"])
-    defective = minute_data[ts.dt.time != pd.Timestamp("09:00").time()].reset_index(drop=True)
+    defective = minute_data[
+        ~ts.dt.time.isin(pd.date_range("09:00", "09:04", freq="1min").time)
+    ].reset_index(drop=True)
     day = pd.to_datetime(defective["Timestamp"]).dt.date.iloc[-1]
     with pytest.raises(InsufficientHistoryError):
         _build(defective, pd.Timestamp(f"{day} 11:00:00", tz=TZ))
@@ -139,3 +142,40 @@ def test_portfolio_fields_flow_into_observation(minute_data):
     assert held.observation[13] == np.float32(37 / 1280)
     np.testing.assert_array_equal(flat.observation[:11], held.observation[:11])
     assert bool(held.action_mask[2]) is True and bool(flat.action_mask[2]) is False
+    assert bool(held.action_mask[3]) is True and bool(flat.action_mask[3]) is False
+
+
+def test_actual_cost_basis_controls_unrealized_pnl(minute_data):
+    day = _last_day(minute_data)
+    as_of = pd.Timestamp(f"{day} 11:00:00", tz=TZ)
+    shares = 2.0
+    cost_basis = 500_000.0
+    result = _build(
+        minute_data,
+        as_of,
+        units_held=2,
+        shares_held=shares,
+        bars_since_entry=5,
+        cost_basis=cost_basis,
+    )
+    price = result.price
+    assert result.observation[-4] == pytest.approx(
+        (shares * price - cost_basis) / ENV_PARAMS["initial_cash"]
+    )
+
+
+def test_builder_uses_artifact_feature_subset_in_declared_order(minute_data):
+    day = _last_day(minute_data)
+    as_of = pd.Timestamp(f"{day} 11:00:00", tz=TZ)
+    subset = ["vwap_dev", "log_ret_1"]
+    result = _build(minute_data, as_of, feature_columns=subset)
+    assert result.observation.shape == (len(subset) + 5,)
+
+    featured = FeatureEngineer().transform(
+        minute_data[
+            pd.to_datetime(minute_data["Timestamp"]) + pd.Timedelta(minutes=1)
+            <= as_of
+        ]
+    )
+    expected = featured.iloc[-1][subset].to_numpy(dtype=np.float32)
+    np.testing.assert_array_equal(result.observation[:2], expected)

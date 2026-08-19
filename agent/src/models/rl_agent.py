@@ -121,6 +121,7 @@ class RLAgent:
                 np.ones_like(units_held_frac, dtype=bool),
                 units_held_frac < 1.0 - 1e-6,
                 units_held_frac > 1e-6,
+                units_held_frac > 1e-6,
             ),
             axis=-1,
         )

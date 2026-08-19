@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from data.defect_days import sanitize_minute_rows
+
 
 @dataclass
 class DataLoader:
@@ -38,6 +40,8 @@ class DataLoader:
         frames = [pd.read_parquet(f, engine="pyarrow") for f in files]
         combined = pd.concat(frames, ignore_index=True)
         sort_key = "Date" if "Date" in combined.columns else "Timestamp"
+        if interval == "1m" and sort_key == "Timestamp":
+            combined = sanitize_minute_rows(combined, sort_key)
         return combined.sort_values(sort_key).reset_index(drop=True)
 
     def prepare_processed_data(self, raw_data: pd.DataFrame) -> pd.DataFrame:

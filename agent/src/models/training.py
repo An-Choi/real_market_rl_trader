@@ -18,6 +18,7 @@ from models.normalization import FeatureNormalizer, NormalizedObservationEnv
 from models.rl_agent import make_rl_agent
 from models.tensorboard_callback import TradingMetricsTensorBoardCallback
 from models.validation import FullSplitValidationCallback
+from models.walk_forward import split_into_day_windows
 
 
 DEFAULT_PPO_KWARGS: dict[str, Any] = {
@@ -36,18 +37,42 @@ DEFAULT_PPO_KWARGS: dict[str, Any] = {
 }
 
 
+def resolve_training_feature_columns(
+    feature_columns: list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    """Validate an experimental subset while preserving declared order."""
+    canonical = list(FeatureEngineer.FEATURE_COLUMNS)
+    if feature_columns is None:
+        return canonical
+    selected = list(feature_columns)
+    if not selected:
+        raise ValueError("feature_columns must not be empty")
+    if len(selected) != len(set(selected)):
+        raise ValueError("feature_columns must not contain duplicates")
+    unknown = [column for column in selected if column not in canonical]
+    if unknown:
+        raise ValueError(f"unknown feature columns: {unknown}")
+    canonical_order = [column for column in canonical if column in selected]
+    if selected != canonical_order:
+        raise ValueError(
+            "feature_columns must preserve FeatureEngineer.FEATURE_COLUMNS order"
+        )
+    return selected
+
+
 def build_training_environment(
     *,
     featured_data: Any,
     environment_config: dict[str, Any],
     friction_config: dict[str, Any],
+    feature_columns: list[str] | tuple[str, ...] | None = None,
 ) -> TradingEnvironment:
     """Build the standard RL training environment from prepared features."""
     episode_days = int(environment_config.get("episode_days", 1))
     nominal_bars = int(environment_config.get("nominal_bars_per_day", 64))
     return TradingEnvironment(
         market_data=featured_data,
-        feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
+        feature_columns=resolve_training_feature_columns(feature_columns),
         initial_cash=environment_config["initial_cash"],
         unit_fraction=environment_config["unit_fraction"],
         max_units=environment_config["max_units"],
@@ -72,6 +97,7 @@ def build_vec_training_environment(
     environment_config: dict[str, Any],
     friction_config: dict[str, Any],
     normalizer: FeatureNormalizer | None,
+    feature_columns: list[str] | tuple[str, ...] | None = None,
 ) -> DummyVecEnv:
     """종목당 TradingEnvironment 1개를 DummyVecEnv로 묶는다 (종목 순서 = dict 순서)."""
 
@@ -82,6 +108,7 @@ def build_vec_training_environment(
                 featured_data=df,
                 environment_config=environment_config,
                 friction_config=friction_config,
+                feature_columns=feature_columns,
             )
             if normalizer is not None:
                 return NormalizedObservationEnv(raw, normalizer)
@@ -105,10 +132,11 @@ def train_ppo_artifact(
     split_boundaries: dict[str, Any],
     model_kwargs: dict[str, Any] | None = None,
     tensorboard_log_dir: str | Path | None = None,
+    feature_columns: list[str] | tuple[str, ...] | None = None,
 ) -> Path:
     """Train the configured PPO-family agent and save a versioned artifact."""
     symbols = list(featured_data.keys())
-    feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
+    feature_columns = resolve_training_feature_columns(feature_columns)
 
     normalization_config = config["agent"].get("normalization", {})
     normalization_enabled = normalization_config.get("enabled", True)
@@ -125,6 +153,7 @@ def train_ppo_artifact(
         environment_config=config["environment"],
         friction_config=config["friction"],
         normalizer=normalizer,
+        feature_columns=feature_columns,
     )
 
     validation_callback = None
@@ -132,15 +161,31 @@ def train_ppo_artifact(
     validation_enabled = bool(validation_config.get("enabled", True))
     if validation_enabled and validation_data is not None:
         evaluation_envs: dict[str, Any] = {}
+        window_days = int(validation_config.get("window_days", 0))
+        min_window_days = int(validation_config.get("min_window_days", 1))
         for symbol, val_df in validation_data.items():
-            raw_val = build_training_environment(
-                featured_data=val_df,
-                environment_config=config["environment"],
-                friction_config=config["friction"],
+            windows = (
+                split_into_day_windows(
+                    val_df,
+                    window_days=window_days,
+                    min_window_days=min_window_days,
+                )
+                if window_days > 0
+                else {"full": val_df}
             )
-            evaluation_envs[symbol] = (
-                NormalizedObservationEnv(raw_val, normalizer) if normalizer is not None else raw_val
-            )
+            for window_label, window_df in windows.items():
+                raw_val = build_training_environment(
+                    featured_data=window_df,
+                    environment_config=config["environment"],
+                    friction_config=config["friction"],
+                    feature_columns=feature_columns,
+                )
+                key = symbol if window_days <= 0 else f"{symbol}/{window_label}"
+                evaluation_envs[key] = (
+                    NormalizedObservationEnv(raw_val, normalizer)
+                    if normalizer is not None
+                    else raw_val
+                )
         validation_callback = FullSplitValidationCallback(
             evaluation_envs,
             eval_freq=int(validation_config.get("eval_freq", 25_000)),
@@ -148,6 +193,7 @@ def train_ppo_artifact(
             seed=int(validation_config.get("seed", seed)),
             deterministic=bool(validation_config.get("deterministic", True)),
             verbose=int(validation_config.get("verbose", 1)),
+            selection=validation_config.get("selection"),
         )
 
     tensorboard_config = config["agent"].get("tensorboard", {})
@@ -171,11 +217,14 @@ def train_ppo_artifact(
         log_dir.mkdir(parents=True, exist_ok=True)
         ppo_kwargs["tensorboard_log"] = str(log_dir)
     ppo_kwargs.update(model_kwargs or {})
+    training_device = str(config["agent"].get("device", "cpu")).strip()
+    if not training_device:
+        raise ValueError("agent.device must not be empty")
     agent = make_rl_agent(
         model_name=config["agent"]["rl_model_name"],
         policy="MlpPolicy",
         seed=seed,
-        device="cpu",
+        device=training_device,
         model_kwargs=ppo_kwargs,
     )
     callbacks: list[Any] = []
@@ -214,6 +263,18 @@ def train_ppo_artifact(
     }
     friction_params = dataclasses.asdict(FrictionModel(**config["friction"]))
 
+    validation_summary = (
+        validation_callback.summary()
+        if validation_callback is not None
+        else {"enabled": False}
+    )
+    if validation_callback is None:
+        deployment_status = "research"
+    elif validation_summary.get("qualified_checkpoint_found", False):
+        deployment_status = "approved"
+    else:
+        deployment_status = "rejected"
+
     metadata = make_training_metadata(
         agent=agent,
         symbols=symbols,
@@ -239,11 +300,7 @@ def train_ppo_artifact(
                 "log_dir": str(configured_log_dir) if configured_log_dir is not None else None,
                 "log_name": tb_log_name if tensorboard_enabled else None,
             },
-            "validation": (
-                validation_callback.summary()
-                if validation_callback is not None
-                else {"enabled": False}
-            ),
+            "validation": validation_summary,
             "reward": {
                 key: value
                 for key, value in config["environment"].items()
@@ -255,13 +312,15 @@ def train_ppo_artifact(
                 }
             },
         },
+        deployment_status=deployment_status,
     )
+    artifact_registry = Path(artifacts_dir) / deployment_status
     if normalizer is None:
-        return save_artifact(agent, metadata, artifacts_dir)
+        return save_artifact(agent, metadata, artifact_registry)
 
     return save_artifact(
         agent,
         metadata,
-        artifacts_dir,
+        artifact_registry,
         normalization_payload=json.dumps(normalizer.to_dict(), indent=2),
     )

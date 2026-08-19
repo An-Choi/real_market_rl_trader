@@ -77,6 +77,9 @@ def build_daily_frame(
     """valuation date 기준 일별 equity와 수익률 분해 (spec r5 §5.2).
 
     모든 metric 계산 전에 마지막 close equity E_D를 E_D_settled로 교체한다.
+    ``terminal_liquidation_cost``는 호환 이름이며, 실제 입력은
+    Close→ExecPrice 가격 조정과 매도 friction을 합친 signed settlement
+    adjustment다.
     (1+r_d) = (1+r_transition)(1+r_intraday)(1+r_settlement).
     """
     val_dates = pd.to_datetime(results["valuation_timestamp"]).dt.date.to_numpy()
@@ -121,9 +124,11 @@ _EMPTY_SUMMARY = {
     "overnight_hold_rate": 0.0,
     "open_at_end": 0.0,
     "terminal_liquidation_cost": 0.0,
+    "terminal_settlement_adjustment": 0.0,
     "market_return": 0.0,
     "hold_action_rate": 0.0,
     "add_action_rate": 0.0,
+    "reduce_action_rate": 0.0,
     "clear_action_rate": 0.0,
     "cum_transition_return": 0.0,
     "cum_intraday_return": 0.0,
@@ -190,10 +195,12 @@ def summarize_backtest(
         "overnight_hold_rate": overnight_hold_rate,
         "open_at_end": float(results["units_held"].iloc[-1] > 0),
         "terminal_liquidation_cost": float(terminal_liquidation_cost),
+        "terminal_settlement_adjustment": float(terminal_liquidation_cost),
         "market_return": market_return,
         "hold_action_rate": float(action_rates.get(0, 0.0)),
         "add_action_rate": float(action_rates.get(1, 0.0)),
-        "clear_action_rate": float(action_rates.get(2, 0.0)),
+        "reduce_action_rate": float(action_rates.get(2, 0.0)),
+        "clear_action_rate": float(action_rates.get(3, 0.0)),
         "cum_transition_return": cum_transition_return,
         "cum_intraday_return": cum_intraday_return,
         "cum_settlement_return": cum_settlement_return,

@@ -73,7 +73,7 @@ def test_action_mask_reflects_cash_gate(flat_data: pd.DataFrame) -> None:
     for _ in range(4):
         env.step(1)
     # units(4) < max(5)지만 현금 부족 → Add 마스크 False
-    assert env.action_masks().tolist() == [True, False, True]
+    assert env.action_masks().tolist() == [True, False, True, True]
 
 
 def test_cash_never_negative_under_random_actions(flat_data: pd.DataFrame) -> None:
@@ -106,7 +106,7 @@ def test_clear_zeroes_units(flat_data: pd.DataFrame) -> None:
     env.reset(seed=0)
     env.step(1)
     env.step(1)
-    _, _, _, _, info = env.step(2)  # Clear
+    _, _, _, _, info = env.step(3)  # Clear
     assert info["units_held"] == 0
 
 
@@ -121,7 +121,7 @@ def test_invalid_action_raises(flat_data: pd.DataFrame) -> None:
     env = make_env(flat_data)
     env.reset(seed=0)
     with pytest.raises(ValueError):
-        env.step(3)
+        env.step(4)
 
 
 def test_friction_charged_on_add(flat_data: pd.DataFrame) -> None:

@@ -1,5 +1,27 @@
 # real-market-rl-trader
 
+## Walk-forward feature audit
+
+Rebuild schema-v4 features, verify the fold plan, and train three folds:
+
+```powershell
+python experiments\walk_forward_train.py --plan-only --force-rebuild
+python experiments\walk_forward_train.py --output-dir runs\walk_forward\v4-run
+```
+
+Inspect all market features and portfolio-state fields on a saved artifact:
+
+```powershell
+python experiments\feature_report.py `
+  --artifact runs\walk_forward\v4-run\artifacts\fold_01\ARTIFACT_ID `
+  --split validation --repeats 5
+```
+
+The JSON report includes permutation policy sensitivity, action-flip rate,
+normalization clipping, forward-return rank correlation, redundancy, 20-day
+sign stability, and state-field coverage. Sensitivity measures policy reliance
+on visited states; it is not proof of causal alpha.
+
 실제 시장 데이터로 강화학습 트레이딩을 실험하는 플랫폼입니다. 목표는 "잘 맞히는 모델"이 아니라 **재현 가능한 RL baseline** — 시장을 예측하는 대신, 시장 상태를 보고 단일 종목 포지션을 언제 키우고 정리할지를 학습합니다.
 
 ## 개요
