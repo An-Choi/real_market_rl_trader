@@ -32,7 +32,7 @@ class DummyTradingEnv(gym.Env):
     def __init__(self):
         super().__init__()
         self.observation_space = spaces.Box(-np.inf, np.inf, shape=(OBS_DIM,), dtype=np.float32)
-        self.action_space = spaces.Discrete(3)
+        self.action_space = spaces.Discrete(4)
         self._t = 0
 
     def reset(self, seed=None, options=None):
@@ -93,7 +93,7 @@ def make_metadata(**overrides) -> ArtifactMetadata:
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         portfolio_state_fields=list(PORTFOLIO_STATE_FIELDS),
         observation_dim=len(FeatureEngineer.FEATURE_COLUMNS) + len(PORTFOLIO_STATE_FIELDS),
-        action_space={"type": "discrete", "n": 3, "labels": ["hold", "add_unit", "clear"]},
+        action_space={"type": "discrete", "n": 4, "labels": ["hold", "add_unit", "reduce_unit", "clear"]},
         normalization=None,
         train_git_sha="testsha",
         train_data={"symbols": ["005930"], "start": "2025-05-22", "end": "2026-06-30"},
@@ -171,8 +171,18 @@ class TestCurrentGitSha:
 
     def test_cwd_independent(self, tmp_path, monkeypatch):
         # workspace root 등 git repo 밖에서 실행돼도 모듈 위치 기준으로 repo를 찾는다.
+        import models.artifact as artifact_module
+        from types import SimpleNamespace
+        expected_root = Path(artifact_module.__file__).resolve().parents[3]
+        calls = []
+        def fake_run(command, **kwargs):
+            assert command[:3] == ['git', '-C', str(expected_root)]
+            calls.append(command)
+            return SimpleNamespace(stdout='abc1234\n' if 'rev-parse' in command else '')
+        monkeypatch.setattr(artifact_module.subprocess, 'run', fake_run)
         monkeypatch.chdir(tmp_path)
-        assert current_git_sha() != "unknown"
+        assert current_git_sha() == 'abc1234'
+        assert len(calls) == 2
 
 
 class TestSaveArtifact:
@@ -449,6 +459,15 @@ def test_load_artifact_rejects_v1_by_default(tmp_path, valid_metadata_dict) -> N
     )
     with pytest.raises(ArtifactError, match="legacy"):
         load_artifact(artifact_dir)
+
+
+def test_old_three_action_artifact_still_rejected_with_legacy_opt_in(tmp_path, valid_metadata_dict):
+    data = dict(valid_metadata_dict)
+    data["action_space"] = {"type": "discrete", "n": 3,
+                            "labels": ["hold", "add_unit", "clear"]}
+    artifact = _write_fake_artifact(tmp_path, data)
+    with pytest.raises(ArtifactError, match="labels"):
+        load_artifact(artifact, allow_legacy_semantics=True)
 
 
 def test_load_artifact_v1_opt_in_passes_gate(tmp_path, valid_metadata_dict, monkeypatch) -> None:

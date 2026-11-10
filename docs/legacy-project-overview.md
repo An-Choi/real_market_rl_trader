@@ -1,0 +1,92 @@
+# real-market-rl-trader
+
+## Walk-forward feature audit
+
+Rebuild schema-v4 features, verify the fold plan, and train three folds:
+
+```powershell
+python experiments\walk_forward_train.py --plan-only --force-rebuild
+python experiments\walk_forward_train.py --output-dir runs\walk_forward\v4-run
+```
+
+Inspect all market features and portfolio-state fields on a saved artifact:
+
+```powershell
+python experiments\feature_report.py `
+  --artifact runs\walk_forward\v4-run\artifacts\fold_01\ARTIFACT_ID `
+  --split validation --repeats 5
+```
+
+The JSON report includes permutation policy sensitivity, action-flip rate,
+normalization clipping, forward-return rank correlation, redundancy, 20-day
+sign stability, and state-field coverage. Sensitivity measures policy reliance
+on visited states; it is not proof of causal alpha.
+
+실제 시장 데이터로 강화학습 트레이딩을 실험하는 플랫폼입니다. 목표는 "잘 맞히는 모델"이 아니라 **재현 가능한 RL baseline** — 시장을 예측하는 대신, 시장 상태를 보고 단일 종목 포지션을 언제 키우고 정리할지를 학습합니다.
+
+## 개요
+
+실제 OHLCV를 환경의 backbone으로 두고, agent는 5분/30분 멀티타임프레임(MTF) feature와 포지션 상태를 관찰해 **포지션을 점진적으로 제어**합니다.
+
+- **Action (3개, discrete):** `0` Hold · `1` Add 1 Unit · `2` Clear
+- **Unit scaling-in:** 1 Unit = 자본의 20%, 최대 5 Unit(=100%). Turtle Trading식 분할 진입. long-only.
+- **에피소드:** 1 종목 × 연속 N거래일(기본 20, config `episode_days`). Overnight 보유 허용, 강제청산 없음 — episode 끝은 truncation(continuing task)이며, 미청산 종료분은 평가 단계에서 가상 청산비용으로 정산.
+- **거래비용:** 수수료·스프레드·슬리피지 + 한국장 매도 증권거래세 0.20%. reward는 비용 차감 로그수익률과 분리 가능한 risk/benchmark 항으로 구성.
+
+## 구조
+
+```text
+real-market-rl-trader/
+│
+├── env/
+│   ├── src/
+│   │   ├── env/
+│   │   ├── data/
+│   │   ├── friction/
+│   │   ├── pipeline/
+│   │   └── utils/
+│   ├── configs/
+│   └── tests/
+│
+├── agent/
+│   └── src/
+│       ├── models/
+│       └── policies/
+│
+├── experiments/
+├── evaluation/
+├── scripts/
+│
+├── data/
+│   ├── raw/
+│   └── processed/
+│
+└── docs/
+```
+
+## 시작하기
+
+Python 3.10+ 권장. 인터프리터는 `python3`을 씁니다.
+
+```bash
+pip install -r requirements.txt
+
+python3 experiments/train.py                    # PPO 학습
+python3 experiments/backtest.py                 # baseline/agent 백테스트
+python3 scripts/backfill.py --symbols 005930    # KIS 분봉 백필
+python3 -m pytest env/tests/ -v                 # 테스트
+```
+
+KIS API 키는 `.env`에 둡니다(`.env.example` 참고). `train.py`는 real 분봉 데이터를 요구합니다 — 먼저 `scripts/backfill.py --symbols 005930`으로 `data/raw/`에 분봉을 백필해야 합니다(`data/raw/`·`data/processed/`는 git에서 제외되므로 fresh clone에는 없음). 이후 `build_features`가 `data/processed/`에 feature parquet 캐시를 만듭니다.
+
+## 현재 구현 범위
+
+- real-OHLCV 단일채널 `TradingEnvironment` (Gymnasium, Unit scaling-in, 연속 N거래일 에피소드)
+- leakage-safe MTF feature 생성 (5분 micro + 30분 context + cross-day, 총 11개; 1분봉→5분 그리드 causal resample)
+- 매도 거래세 포함 friction model
+- SB3 Contrib `MaskablePPO` 연결용 `RLAgent` wrapper와 invalid-action masking
+- train split 기준 feature standardization과 artifact stats 복원
+- 학습 중 validation 전체 구간 평가와 최고 checkpoint artifact 저장
+- baseline agent (buy-and-hold, MA crossover, random 등)
+- split 전체 날짜 agent ↔ env 백테스트, 평가 metric (return / Sharpe / max drawdown / turnover 등)
+- 거래소 API 없이 동작 구조만 잡은 paper trading engine

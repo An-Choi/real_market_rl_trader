@@ -110,3 +110,31 @@ def test_from_env_raises_when_missing(
     monkeypatch.delenv("KIS_APP_SECRET", raising=False)
     with pytest.raises(RuntimeError, match="KIS_APP_KEY"):
         KISConfig.from_env(token_cache_path=tmp_path / "tok.json")
+
+
+def test_credentials_not_in_repr(config):
+    assert config.app_key not in repr(config)
+    assert config.app_secret not in repr(config)
+
+
+def test_cache_is_private_and_atomic(config, monkeypatch):
+    import os
+    import stat
+    auth = KISAuth(config)
+    auth._write_cache("old", datetime.now() + timedelta(hours=1))
+    assert stat.S_IMODE(config.token_cache_path.stat().st_mode) == 0o600
+    original = config.token_cache_path.read_text()
+    def fail_replace(*args):
+        raise OSError("simulated interruption")
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError):
+        auth._write_cache("new", datetime.now() + timedelta(hours=1))
+    assert config.token_cache_path.read_text() == original
+    assert not list(config.token_cache_path.parent.glob(".kis-token-*"))
+
+
+@pytest.mark.parametrize("payload", [{}, [], {"expires_at": "bad"},
+    {"expires_at": "2099-01-01T00:00:00", "access_token": 3}])
+def test_malformed_cache_is_ignored(config, payload):
+    config.token_cache_path.write_text(json.dumps(payload))
+    assert KISAuth(config)._read_cache() is None

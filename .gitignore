@@ -34,6 +34,14 @@ artifacts/
 
 # KIS credentials and data
 .env
+.env.*
+!.env.example
+.kis_token*
 # data/ is a nested clone of An-Choi/rl-trader-data (own git repo)
 # 루트만 무시 — env/src/data/ 같은 소스 디렉터리에 걸리면 안 됨
 /data/
+
+# Local handoff and private material
+/releases/
+*.pem
+*.key

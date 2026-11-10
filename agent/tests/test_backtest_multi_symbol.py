@@ -21,6 +21,7 @@ from experiments.backtest import (
     run_artifact_backtests,
 )
 from models.walk_forward import SplitBoundaries
+from data.feature_engineer import FeatureEngineer
 
 
 def _write_synthetic_minute_parquet(root: Path, symbol: str, days: int = 60) -> None:
@@ -63,6 +64,7 @@ class _Meta:
         self.artifact_format_version = version
         self.train_data = train_data
         self.artifact_id = "test-artifact"
+        self.feature_columns = list(FeatureEngineer.FEATURE_COLUMNS)
 
 
 V4_TRAIN_DATA = {
@@ -153,7 +155,7 @@ def test_artifact_loaded_exactly_once_for_multi_symbol(monkeypatch):
     )
     monkeypatch.setattr(
         "experiments.backtest.build_backtest_environment",
-        lambda featured_data, config: object(),
+        lambda featured_data, config, *, feature_columns: object(),
     )
     monkeypatch.setattr(
         "experiments.backtest.check_env_compatibility",
@@ -188,7 +190,7 @@ def _patch_backtest_internals(monkeypatch, calls, meta):
     )
     monkeypatch.setattr(
         "experiments.backtest.build_backtest_environment",
-        lambda featured_data, config: object(),
+        lambda featured_data, config, *, feature_columns: object(),
     )
     monkeypatch.setattr(
         "experiments.backtest.check_env_compatibility", lambda m, e: None,
