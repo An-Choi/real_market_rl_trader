@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,8 +20,8 @@ TOKEN_ENDPOINT = "/oauth2/tokenP"
 @dataclass
 class KISConfig:
     env: str            # "demo" or "real"
-    app_key: str
-    app_secret: str
+    app_key: str = field(repr=False)
+    app_secret: str = field(repr=False)
     token_cache_path: Path
 
     @classmethod
@@ -71,13 +72,20 @@ class KISAuth:
         if not path.exists():
             return None
         try:
+            if path.is_symlink():
+                raise ValueError("token cache must not be a symlink")
+            path.chmod(0o600)
             data = json.loads(path.read_text())
-        except (json.JSONDecodeError, OSError):
+            expires_at = datetime.fromisoformat(data["expires_at"])
+            token = data["access_token"]
+            if not isinstance(token, str) or not token:
+                return None
+            now = datetime.now(expires_at.tzinfo)
+            if expires_at <= now + timedelta(minutes=5):
+                return None
+        except (ValueError, TypeError, KeyError, OSError):
             return None
-        expires_at = datetime.fromisoformat(data["expires_at"])
-        if expires_at <= datetime.now() + timedelta(minutes=5):
-            return None
-        return data["access_token"]
+        return token
 
     def _issue_and_cache(self) -> str:
         response = requests.post(
@@ -100,8 +108,16 @@ class KISAuth:
 
     def _write_cache(self, access_token: str, expires_at: datetime) -> None:
         path = self._config.token_cache_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({
-            "access_token": access_token,
-            "expires_at": expires_at.isoformat(),
-        }))
+        # The parent can be shared data/ or RUNNER_TEMP: do not chmod it.
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd, temporary = tempfile.mkstemp(prefix=".kis-token-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"access_token": access_token,
+                           "expires_at": expires_at.isoformat()}, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)

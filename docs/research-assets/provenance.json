@@ -1,0 +1,36 @@
+{
+  "source": "runs/completion-v3/result-assets",
+  "source_sha256": {
+    "global-risk-study/frozen_evaluation/metrics.csv": "b37e3b19b301fe93db322a4932a7fc610821f9bd382c8026feefa5bc8df2827f",
+    "global-risk-study/frozen_evaluation/selection_freeze.json": "ecd7056de2e580a5a61af16ff58fe402cb035170d161f549388f15badee83cc7",
+    "stress-shards/I-seed42/metrics.csv": "d1946e207560f48c52b64bf74e5157bc065874748662d98aafc3da6faf8c4de0",
+    "stress-shards/I-seed42/audit_freeze.json": "9c3c081e75dce6f2432a4a1edc9c2403117786fc00d6c12f23bc01c36fb0a3cf",
+    "stress-shards/I-seed43/metrics.csv": "c5617ef3c2d3c776b4e4069f9875053f1f4906a9ee28f5fa85dcfa0b2e6c7d38",
+    "stress-shards/I-seed43/audit_freeze.json": "be4efa56b498999c2b5977117e948023a0f50576d9a763030903761af0fed547",
+    "stress-shards/I-seed44/metrics.csv": "7964072064b7bb34ce947b237bb9e2bd2be267901d001a7e23933f130cc6b9af",
+    "stress-shards/I-seed44/audit_freeze.json": "ca7cb5e5cfa07103c15fe7ac91b4d51743e317531874a176069d7f8b72ba2cac",
+    "stress-shards/J-seed42/metrics.csv": "dceda55188d6c0924335e7916e5d8dfafda3690b86d7fd235c079b431a91cbc6",
+    "stress-shards/J-seed42/audit_freeze.json": "c4bde2fa97846c42af2e0a270a1351258f78a40e9d6fab161ac48f4bbdac4832",
+    "stress-shards/J-seed43/metrics.csv": "786cf29481c03cf5cb76fa23ffe1fc361deca507ade8fdc9b74b81ad84217e3d",
+    "stress-shards/J-seed43/audit_freeze.json": "83048d1b47652b232a03a861acc5d2bdfa743ddcdfcc83cacbf59184642f9f8f",
+    "stress-shards/J-seed44/metrics.csv": "e9d14b77868fad8621ffab4173a2ee3b186a744d4c92dc871f387b09b5fbd814",
+    "stress-shards/J-seed44/audit_freeze.json": "759261b6d1eb8cc03cf23ea4849df341d342282ba8b0d3b07832c5ea52357c7a",
+    "stress-shards/K-seed42/metrics.csv": "2bb1b8072f006c69da3bbe04a0587a353b88bb3c1f92fcf8780aaa49ee0e1359",
+    "stress-shards/K-seed42/audit_freeze.json": "7f8d1166366bb69498d44527e76613d12e197afbc797735aec8c6931c8a22e27",
+    "stress-shards/K-seed43/metrics.csv": "458e031683b3d2335139d6ffe5b50fa833c31b79993ecea0c82cbc2c206e757f",
+    "stress-shards/K-seed43/audit_freeze.json": "f488d38da69f855cea34359be86a5c739a0669a2904746b63e786d375a412f9c",
+    "stress-shards/K-seed44/metrics.csv": "64734b6041357774f7e483c81650de493d982a08674a656cc7cfe726ba89001a",
+    "stress-shards/K-seed44/audit_freeze.json": "f4a9eb83157aca2ab480b9354b4af7295feeb6f55bcd1a50778379704d837eb8"
+  },
+  "limitations": [
+    "Retrospective data reuse; earlier tests may overlap later validation",
+    "No condition met the validation risk budget for every symbol/seed/fold",
+    "Three seeds measure optimizer variation, not market uncertainty",
+    "Sparse days excluded from qualified study; stress audit is exploratory",
+    "Stress windows overlap and some precede the frozen model training endpoint",
+    "Cost addback is an accounting diagnostic, not a zero-cost policy counterfactual",
+    "Prospective holdout awaits future observations"
+  ],
+  "validation_feasible_conditions": [],
+  "training_performed_during_export": false
+}

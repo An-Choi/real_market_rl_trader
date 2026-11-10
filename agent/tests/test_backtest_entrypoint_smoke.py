@@ -195,6 +195,7 @@ def test_backtest_entrypoint_compares_baselines_with_artifact(tmp_path: Path) ->
 
     env = TradingEnvironment(
         market_data=train_data,
+        initial_cash=repo_config["environment"]["initial_cash"],
         feature_columns=list(FeatureEngineer.FEATURE_COLUMNS),
         friction_model=FrictionModel(**repo_config["friction"]),  # CLI 백테스트가 재구성하는 friction과 일치해야 함
         unit_fraction=0.199,  # 레포 config와 일치해야 CLI 백테스트가 artifact를 수용
